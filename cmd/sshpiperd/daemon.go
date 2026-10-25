@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/tg123/sshpiper/cmd/sshpiperd/internal/admin"
@@ -64,6 +65,7 @@ type daemon struct {
 	audit         *audit.Writer // relay:
 	auditShutdown time.Duration // relay:
 	auditByAddr   sync.Map      // relay: downstream RemoteAddr string -> *audit.Session
+	closing       atomic.Bool   // relay: set on graceful shutdown
 }
 
 func generateSshKey(keyfile string) error {
@@ -580,6 +582,10 @@ func (d *daemon) run() error {
 	for {
 		conn, err := d.lis.Accept()
 		if err != nil {
+			if d.closing.Load() { // relay: graceful shutdown, stop accepting
+				slog.Info("listener closed, stopping")
+				return nil
+			}
 			slog.Debug("failed to accept connection", "error", err)
 			continue
 		}

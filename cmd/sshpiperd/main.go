@@ -542,6 +542,8 @@ func main() {
 				}()
 			}
 
+			d.installSignalHandler() // relay: flush the audit on SIGTERM/SIGINT
+
 			go func() {
 				quit <- d.run()
 			}()
