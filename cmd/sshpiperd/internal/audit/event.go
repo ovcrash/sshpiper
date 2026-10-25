@@ -91,6 +91,14 @@ type Event struct {
 	LocalIP         string   `json:"local_ip,omitempty"`
 	LocalPort       int      `json:"local_port,omitempty"`
 	Error           string   `json:"error,omitempty"`
+	Transfer        string   `json:"transfer,omitempty"`
+	Path            string   `json:"path,omitempty"`
+	Filename        string   `json:"filename,omitempty"`
+	Size            int64    `json:"size,omitempty"`
+	OutFile         string   `json:"outfile,omitempty"`
+	Stored          *bool    `json:"stored,omitempty"`
+	Truncated       bool     `json:"truncated,omitempty"`
+	Incomplete      bool     `json:"incomplete,omitempty"`
 }
 
 func nowRFC3339Micro() string {

@@ -14,6 +14,11 @@ type Options struct {
 	Dir       string // audit root; empty disables auditing
 	QueueSize int    // bounded queue length (default 10000)
 	Sensor    string // sensor name stamped on every event
+
+	// transferred files (see files.go)
+	FileMaxSize   int64         // bytes stored per file (default 50 MB)
+	FileQuota     int64         // total bytes of stored files (default 5 GB)
+	FileRetention time.Duration // age after which stored files are deleted (default 90 days)
 }
 
 // Writer serializes all audit output through one goroutine fed by a bounded
@@ -35,6 +40,7 @@ type Writer struct {
 	files  map[string]*os.File
 	allDay string
 	all    *os.File
+	store  *fileStore
 }
 
 type record struct {
@@ -42,7 +48,8 @@ type record struct {
 	ev      *Event
 	path    string // relative file under the session dir, for a raw append
 	data    []byte
-	close   bool // close this session's files
+	close   bool    // close this session's files
+	file    *fileOp // a chunk or the end of a transferred file
 }
 
 // Sensor returns the configured sensor name.
@@ -64,6 +71,7 @@ func NewWriter(opts Options) (*Writer, error) {
 		closing: make(chan struct{}),
 		files:   make(map[string]*os.File),
 	}
+	w.store = newFileStore(w, opts)
 	w.wg.Add(1)
 	go w.loop()
 	return w, nil
@@ -89,13 +97,18 @@ func (w *Writer) appendFile(session, path string, data []byte) {
 	w.enqueue(record{session: session, path: path, data: data})
 }
 
-func (w *Writer) enqueue(r record) {
+func (w *Writer) enqueue(r record) { w.tryEnqueue(r) }
+
+// tryEnqueue queues r without blocking and reports whether it was queued.
+func (w *Writer) tryEnqueue(r record) bool {
 	select {
 	case w.queue <- r:
+		return true
 	default:
 		if w.dropped.Add(1) == 1 {
 			w.dropSince.Store(time.Now().UnixMicro())
 		}
+		return false
 	}
 }
 
@@ -111,6 +124,7 @@ func (w *Writer) loop() {
 			w.reportDrops()
 		case <-ticker.C:
 			w.reportDrops()
+			w.store.maybePrune()
 		case <-w.closing:
 			// drain what is already queued, then close files
 			for {
@@ -165,6 +179,10 @@ func (w *Writer) sessionFile(session, rel string) *os.File {
 }
 
 func (w *Writer) write(r record) {
+	if r.file != nil {
+		w.store.apply(r.file)
+		return
+	}
 	if r.close {
 		prefix := r.session + "/"
 		for k, f := range w.files {
@@ -223,6 +241,7 @@ func (w *Writer) closeFiles() {
 		_ = w.all.Close()
 		w.all = nil
 	}
+	w.store.closeAll()
 }
 
 // Close drains the queue (up to a timeout) and stops the goroutine.

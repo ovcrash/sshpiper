@@ -43,6 +43,7 @@ type Session struct {
 	offered       []string
 	loggedSuccess bool
 	closed        bool
+	fileChans     map[uint32]*fileChannel
 }
 
 type addr struct {
@@ -101,12 +102,25 @@ func (s *Session) emit(ev *Event) {
 	s.w.Emit(s.id, ev)
 }
 
+// emitDirect writes an event from the writer goroutine itself (file events),
+// without going through the queue.
+func (s *Session) emitDirect(ev *Event) {
+	s.mu.Lock()
+	if s.closed {
+		ev.Late = true
+	}
+	s.mu.Unlock()
+	s.w.stamp(ev)
+	s.w.write(record{session: s.id, ev: ev})
+}
+
 // Emit queues an arbitrary event under this session (used for version/kex/auth
 // events built by the caller).
 func (s *Session) Emit(ev *Event) { s.emit(ev) }
 
 // Close emits piper.session.closed and releases the session files.
 func (s *Session) Close() {
+	s.closeAllFiles() // finish and emit any transfer still open
 	ev := s.newEvent(EventSessClosed)
 	ev.DurationMs = time.Since(s.start).Milliseconds()
 	s.emit(ev)

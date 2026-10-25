@@ -17,9 +17,14 @@ func (s *Session) Downhook(msg []byte) error {
 			setData(ev, data)
 			s.emit(ev)
 			s.castAppend(id, "i", data)
+			s.feedFileClient(id, data)
 		}
 	case msgChannelRequest:
 		s.channelRequest(msg)
+	case msgChannelEOF, msgChannelClose:
+		if srv, _, ok := readUint32(msg[1:]); ok {
+			s.closeFileChannel(s.canonical(srv))
+		}
 	}
 	return nil
 }
@@ -62,6 +67,7 @@ func (s *Session) Uphook(msg []byte) error {
 		setData(ev, raw)
 		s.emit(ev)
 		s.castAppend(cli, "o", raw)
+		s.feedFileServer(cli, raw)
 	case msgChannelExtData:
 		cli, rest, ok := readUint32(msg[1:])
 		if !ok {
@@ -181,6 +187,13 @@ func (s *Session) channelRequest(msg []byte) {
 		ev.Channel, ev.Input = uint32p(id), command
 		s.emit(ev)
 		s.channelRequestEvent(id, reqType, command)
+		s.startSCP(id, command)
+	case "subsystem":
+		name, _, _ := readString(rest)
+		s.channelRequestEvent(id, reqType, name)
+		if name == "sftp" {
+			s.startSFTP(id)
+		}
 	case "window-change":
 		width, r, ok := readUint32(rest)
 		if !ok {

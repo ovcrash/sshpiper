@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"strconv"
+	"time"
 
 	"github.com/tg123/sshpiper/cmd/sshpiperd/internal/audit"
 	"github.com/tg123/sshpiper/sshkex"
@@ -98,6 +99,24 @@ func auditFlags() []cli.Flag {
 			Usage:   "sensor name stamped on every audit event (default: hostname)",
 			EnvVars: []string{"SSHPIPERD_SENSOR_NAME"},
 		},
+		&cli.Int64Flag{
+			Name:    "audit-file-max-size",
+			Value:   50 << 20,
+			Usage:   "bytes stored per transferred file; the rest is counted but not copied",
+			EnvVars: []string{"SSHPIPERD_AUDIT_FILE_MAX_SIZE"},
+		},
+		&cli.Int64Flag{
+			Name:    "audit-file-quota",
+			Value:   5 << 30,
+			Usage:   "total bytes of stored file copies; beyond it files are logged but not copied",
+			EnvVars: []string{"SSHPIPERD_AUDIT_FILE_QUOTA"},
+		},
+		&cli.DurationFlag{
+			Name:    "audit-file-retention",
+			Value:   90 * 24 * time.Hour,
+			Usage:   "age after which stored file copies are deleted",
+			EnvVars: []string{"SSHPIPERD_AUDIT_FILE_RETENTION"},
+		},
 	}
 }
 
@@ -112,9 +131,12 @@ func (d *daemon) setupAudit(ctx *cli.Context) error {
 		sensor, _ = os.Hostname()
 	}
 	w, err := audit.NewWriter(audit.Options{
-		Dir:       dir,
-		QueueSize: ctx.Int("audit-queue-size"),
-		Sensor:    sensor,
+		Dir:           dir,
+		QueueSize:     ctx.Int("audit-queue-size"),
+		Sensor:        sensor,
+		FileMaxSize:   ctx.Int64("audit-file-max-size"),
+		FileQuota:     ctx.Int64("audit-file-quota"),
+		FileRetention: ctx.Duration("audit-file-retention"),
 	})
 	if err != nil {
 		return err
