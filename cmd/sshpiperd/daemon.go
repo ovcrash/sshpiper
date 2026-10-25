@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/md5"
 	"crypto/rand"
@@ -51,6 +52,10 @@ type daemon struct {
 	// Set by main.go when --admin-grpc-port is enabled; nil otherwise, in
 	// which case the daemon path is unchanged.
 	adminRegistry *admin.Registry
+
+	// personas selects the SSH identity per destination address when
+	// --registry is set (see relay.go); nil otherwise.
+	personas *personaStore // relay:
 }
 
 func generateSshKey(keyfile string) error {
@@ -313,12 +318,15 @@ func newDaemon(ctx *cli.Context) (*daemon, error) {
 	// however, this is to make sure that the default values are set no matter sshiper.go calls SetDefaults or not
 	config.SetDefaults()
 
-	signers, err := loadHostKeys(ctx)
-	if err != nil {
-		return nil, err
-	}
-	for _, signer := range signers {
-		config.AddHostKey(signer)
+	// relay: in registry mode the host keys come from the personas
+	if ctx.String("registry") == "" {
+		signers, err := loadHostKeys(ctx)
+		if err != nil {
+			return nil, err
+		}
+		for _, signer := range signers {
+			config.AddHostKey(signer)
+		}
 	}
 
 	lis, err := net.Listen("tcp", net.JoinHostPort(ctx.String("address"), ctx.String("port")))
@@ -573,8 +581,17 @@ func (d *daemon) run() error {
 		go func(c net.Conn) {
 			defer c.Close()
 
+			piperConfig := &d.config.PiperConfig
+			if d.personas != nil { // relay: identity per destination address
+				piperConfig = d.personas.configFor(context.Background(), c.LocalAddr(), c.RemoteAddr())
+				if piperConfig == nil {
+					slog.Debug("address not in service, closing", "local_addr", c.LocalAddr(), "remote_addr", c.RemoteAddr())
+					return
+				}
+			}
+
 			p := d.establishPipe(c, func() (*ssh.PiperConn, error) {
-				return ssh.NewSSHPiperConn(c, &d.config.PiperConfig)
+				return ssh.NewSSHPiperConn(c, piperConfig)
 			})
 			if p == nil {
 				return

@@ -458,6 +458,10 @@ func main() {
 				return err
 			}
 
+			if err := d.setupPersonas(ctx); err != nil { // relay:
+				return err
+			}
+
 			d.recorddir = ctx.String("screen-recording-dir")
 			d.recordfmt = ctx.String("screen-recording-format")
 			d.usernameAsRecorddir = ctx.Bool("username-as-recorddir")
@@ -534,6 +538,8 @@ func main() {
 			return <-quit
 		},
 	}
+
+	app.Flags = append(app.Flags, relayFlags()...) // relay:
 
 	if err := app.Run(os.Args); err != nil {
 		slog.Error("run failed", "error", err)

@@ -174,6 +174,34 @@ func (db *DB) one(ctx context.Context, query string, args ...any) (*Entry, error
 	return e, nil
 }
 
+// Route is the part of an entry needed to decide, per connection, whether to
+// serve an address. It carries no secrets.
+type Route struct {
+	ID        int64
+	State     State
+	UpdatedAt string
+}
+
+// RouteByExternalIP is a light lookup for the connection path. It returns
+// ErrNotFound for unknown or invalid addresses.
+func (db *DB) RouteByExternalIP(ctx context.Context, ip string) (*Route, error) {
+	norm, err := NormalizeIP(ip)
+	if err != nil {
+		return nil, ErrNotFound
+	}
+	var r Route
+	var state string
+	err = db.sql.QueryRowContext(ctx, "SELECT id, state, updated_at FROM entries WHERE external_ip = ?", norm).Scan(&r.ID, &state, &r.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("registry: %w", err)
+	}
+	r.State = State(state)
+	return &r, nil
+}
+
 // List returns entries ordered by id, optionally limited to some states.
 func (db *DB) List(ctx context.Context, states ...State) ([]*Entry, error) {
 	query := "SELECT " + entryColumns + " FROM entries"
