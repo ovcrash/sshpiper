@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/tg123/sshpiper/cmd/sshpiperd/internal/admin"
@@ -62,6 +63,7 @@ type daemon struct {
 	// (see audit.go); nil otherwise.
 	audit         *audit.Writer // relay:
 	auditShutdown time.Duration // relay:
+	auditByAddr   sync.Map      // relay: downstream RemoteAddr string -> *audit.Session
 }
 
 func generateSshKey(keyfile string) error {
@@ -590,6 +592,7 @@ func (d *daemon) run() error {
 			sess, cc := d.startAudit(c) // relay: audit, returns c unchanged when disabled
 			c = cc
 			if sess != nil {
+				defer d.endAudit(c)
 				defer sess.Close()
 			}
 
@@ -624,6 +627,7 @@ func (d *daemon) run() error {
 
 			if sess != nil { // relay: record version/HASSH, install audit hooks
 				d.recordHandshake(sess, c)
+				sess.LoginSuccess() // the pipe exists: the backend accepted the client
 				uphookchain.append(ssh.InspectPacketHook(sess.Uphook))
 				downhookchain.append(ssh.InspectPacketHook(sess.Downhook))
 			}

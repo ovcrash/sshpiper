@@ -36,9 +36,12 @@ type Session struct {
 	start   time.Time
 	envOnly map[string]string // env seen before a shell/exec, to seed the cast header
 
-	mu       sync.Mutex
-	srvToCli map[uint32]uint32 // server channel id -> client (canonical) id
-	chans    map[uint32]*chanState
+	mu            sync.Mutex
+	srvToCli      map[uint32]uint32 // server channel id -> client (canonical) id
+	chans         map[uint32]*chanState
+	lastAttempt   attempt
+	offered       []string
+	loggedSuccess bool
 }
 
 type addr struct {

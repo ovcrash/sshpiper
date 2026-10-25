@@ -9,7 +9,65 @@ import (
 
 	"github.com/tg123/sshpiper/cmd/sshpiperd/internal/audit"
 	"github.com/urfave/cli/v2"
+	"golang.org/x/crypto/ssh"
 )
+
+// auditSessionFor returns the session recording the connection of conn, or nil.
+func (d *daemon) auditSessionFor(conn ssh.ConnMetadata) *audit.Session {
+	if conn == nil || conn.RemoteAddr() == nil {
+		return nil
+	}
+	if v, ok := d.auditByAddr.Load(conn.RemoteAddr().String()); ok {
+		return v.(*audit.Session)
+	}
+	return nil
+}
+
+// wrapAuthCallbacks tees authentication details into the audit. The daemon
+// stays the single writer: the plugin only routes. Called after install,
+// only when auditing is on.
+func (d *daemon) wrapAuthCallbacks() {
+	cfg := &d.config.PiperConfig
+
+	if next := cfg.NextAuthMethods; next != nil {
+		cfg.NextAuthMethods = func(conn ssh.ConnMetadata, ctx ssh.ChallengeContext) ([]string, error) {
+			methods, err := next(conn, ctx)
+			if sess := d.auditSessionFor(conn); sess != nil {
+				sess.SetOfferedMethods(methods)
+			}
+			return methods, err
+		}
+	}
+
+	if pw := cfg.PasswordCallback; pw != nil {
+		cfg.PasswordCallback = func(conn ssh.ConnMetadata, password []byte, ctx ssh.ChallengeContext) (*ssh.Upstream, error) {
+			if sess := d.auditSessionFor(conn); sess != nil {
+				sess.SetPasswordAttempt(conn.User(), string(password))
+			}
+			return pw(conn, password, ctx)
+		}
+	}
+
+	if pk := cfg.PublicKeyCallback; pk != nil {
+		cfg.PublicKeyCallback = func(conn ssh.ConnMetadata, key ssh.PublicKey, ctx ssh.ChallengeContext) (*ssh.Upstream, error) {
+			if sess := d.auditSessionFor(conn); sess != nil {
+				line := string(ssh.MarshalAuthorizedKey(key))
+				sess.SetKeyAttempt(conn.User(), ssh.FingerprintSHA256(key), line, key.Type())
+			}
+			return pk(conn, key, ctx)
+		}
+	}
+
+	prevFail := cfg.UpstreamAuthFailureCallback
+	cfg.UpstreamAuthFailureCallback = func(conn ssh.ConnMetadata, method string, err error, ctx ssh.ChallengeContext) {
+		if sess := d.auditSessionFor(conn); sess != nil {
+			sess.LoginFailed()
+		}
+		if prevFail != nil {
+			prevFail(conn, method, err, ctx)
+		}
+	}
+}
 
 // auditFlags returns the audit options. Without --audit-dir nothing is
 // recorded by the audit package and the daemon behaves as before.
@@ -54,6 +112,7 @@ func (d *daemon) setupAudit(ctx *cli.Context) error {
 	}
 	d.audit = w
 	d.auditShutdown = ctx.Duration("login-grace-time")
+	d.wrapAuthCallbacks()
 	return nil
 }
 
@@ -68,7 +127,17 @@ func (d *daemon) startAudit(c net.Conn) (*audit.Session, net.Conn) {
 	srcIP, srcPort := splitAddr(c.RemoteAddr())
 	dstIP, dstPort := splitAddr(c.LocalAddr())
 	sess := audit.NewSession(d.audit, cc.sessionID, srcIP, srcPort, dstIP, dstPort)
+	if c.RemoteAddr() != nil {
+		d.auditByAddr.Store(c.RemoteAddr().String(), sess)
+	}
 	return sess, cc
+}
+
+// endAudit removes the per-connection session lookup entry.
+func (d *daemon) endAudit(c net.Conn) {
+	if c != nil && c.RemoteAddr() != nil {
+		d.auditByAddr.Delete(c.RemoteAddr().String())
+	}
 }
 
 // recordHandshake emits the client version and KEXINIT events once the
