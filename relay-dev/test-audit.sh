@@ -53,7 +53,8 @@ else
 fi
 
 echo "== asciicast replays with input and output"
-cast="$(compose exec -T proxy sh -c 'ls /audit/*/*/channel-*.cast 2>/dev/null | head -1' | tr -d '\r')"
+# the cast of the interactive session (the only one with typed input)
+cast="$(compose exec -T proxy sh -c 'grep -l "hello-world" /audit/*/*/channel-*.cast 2>/dev/null | tail -1' | tr -d '\r')"
 if [ -n "$cast" ]; then
 	body="$(compose exec -T proxy cat "$cast")"
 	if head -1 <<<"$body" | grep -q '"version": *2' && grep -q ',"o",' <<<"$body" && grep -q ',"i",' <<<"$body"; then
