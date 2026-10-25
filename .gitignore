@@ -29,3 +29,10 @@ cmd/sshpiperd/snap/launcher/configentry.txt
 /revtunnel
 e2e/bench-profiles/
 *.prof
+
+# relay dev bench: local state and secrets
+*.db
+*.db-shm
+*.db-wal
+relay-dev/**/secrets/
+relay-dev/audit/
