@@ -1,0 +1,91 @@
+name: relay-dev
+
+# Dev bench: an unmodified sshpiperd in front of two Ubuntu 24.04 sshd.
+# The 10.99.0.x addresses are not reachable from a Windows/macOS host:
+# run every test from the tester container (see test.sh).
+
+networks:
+  relaynet:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.99.0.0/24
+          # keep dynamic allocation away from the static addresses below
+          ip_range: 10.99.0.192/26
+
+volumes:
+  proxy-hostkey:
+  backend1-hostkeys:
+  backend2-hostkeys:
+
+services:
+  proxy:
+    build:
+      context: ..
+      dockerfile: relay-dev/proxy/Dockerfile
+    hostname: proxy
+    cap_add: [NET_ADMIN]
+    environment:
+      # extra "external" addresses added to eth0 by the entrypoint
+      EXTERNAL_IPS: 10.99.0.11,10.99.0.12
+      SSHPIPERD_PORT: "22"
+      SSHPIPERD_SERVER_KEY: /var/lib/sshpiperd/ssh_host_ed25519_key
+      SSHPIPERD_SERVER_KEY_GENERATE_MODE: notexist
+      SSHPIPERD_LOG_LEVEL: ${SSHPIPERD_LOG_LEVEL:-info}
+    command:
+      - --screen-recording-dir=/audit
+      - --screen-recording-format=asciicast
+      - /sshpiperd/plugins/fixed
+      - --target=backend1:22
+    volumes:
+      - proxy-hostkey:/var/lib/sshpiperd
+      - ./audit:/audit
+    networks:
+      relaynet:
+        ipv4_address: 10.99.0.2
+    healthcheck:
+      test: ["CMD", "bash", "-c", "</dev/tcp/10.99.0.11/22"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+    depends_on:
+      backend1:
+        condition: service_healthy
+      backend2:
+        condition: service_healthy
+
+  backend1:
+    build: ./backend
+    hostname: backend1
+    env_file: ./secrets/backend1.env
+    volumes:
+      - backend1-hostkeys:/hostkeys
+    networks:
+      relaynet:
+        ipv4_address: 10.99.0.21
+    healthcheck: &sshd-health
+      test: ["CMD-SHELL", "pgrep -x sshd >/dev/null"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  backend2:
+    build: ./backend
+    hostname: backend2
+    env_file: ./secrets/backend2.env
+    volumes:
+      - backend2-hostkeys:/hostkeys
+    networks:
+      relaynet:
+        ipv4_address: 10.99.0.22
+    healthcheck: *sshd-health
+
+  tester:
+    build: ./tester
+    hostname: tester
+    cap_add: [NET_ADMIN, NET_RAW]
+    networks:
+      relaynet:
+        ipv4_address: 10.99.0.100
+    depends_on:
+      - proxy
