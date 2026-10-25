@@ -471,6 +471,8 @@ func main() {
 				return err
 			}
 
+			setupSourcePort(ctx) // relay:
+
 			d.recorddir = ctx.String("screen-recording-dir")
 			d.recordfmt = ctx.String("screen-recording-format")
 			d.usernameAsRecorddir = ctx.Bool("username-as-recorddir")
@@ -548,8 +550,9 @@ func main() {
 		},
 	}
 
-	app.Flags = append(app.Flags, relayFlags()...) // relay:
-	app.Flags = append(app.Flags, auditFlags()...) // relay:
+	app.Flags = append(app.Flags, relayFlags()...)      // relay:
+	app.Flags = append(app.Flags, auditFlags()...)      // relay:
+	app.Flags = append(app.Flags, sourcePortFlags()...) // relay:
 
 	if err := app.Run(os.Args); err != nil {
 		slog.Error("run failed", "error", err)

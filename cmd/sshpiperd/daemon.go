@@ -588,6 +588,7 @@ func (d *daemon) run() error {
 
 		go func(c net.Conn) {
 			defer c.Close()
+			defer releaseUpstreams(c.RemoteAddr()) // relay: abandoned upstream attempts (--preserve-source-port)
 
 			sess, cc := d.startAudit(c) // relay: audit, returns c unchanged when disabled
 			c = cc

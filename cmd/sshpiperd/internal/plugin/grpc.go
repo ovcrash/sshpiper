@@ -361,7 +361,7 @@ func (g *GrpcPlugin) createUpstream(conn ssh.ConnMetadata, challengeCtx ssh.Chal
 		config.Auth = append(config.Auth, ssh.NoneAuth())
 	}
 
-	upstreamConn, addr, err := g.dialUpstream(upstreamUri)
+	upstreamConn, addr, err := g.dialUpstream(upstreamUri, conn.RemoteAddr()) // relay: pass the client address
 	if err != nil {
 		return nil, err
 	}
@@ -379,7 +379,7 @@ func (g *GrpcPlugin) createUpstream(conn ssh.ConnMetadata, challengeCtx ssh.Chal
 	}, nil
 }
 
-func (g *GrpcPlugin) dialUpstream(uri string) (net.Conn, string, error) {
+func (g *GrpcPlugin) dialUpstream(uri string, downstream net.Addr) (net.Conn, string, error) {
 	var addr string
 	var network string
 
@@ -415,7 +415,7 @@ func (g *GrpcPlugin) dialUpstream(uri string) (net.Conn, string, error) {
 		return nil, "", fmt.Errorf("invalid upstream uri, missing address: %s", uri)
 	}
 
-	upstreamConn, err := net.Dial(network, addr)
+	upstreamConn, err := DialUpstream(network, addr, downstream) // relay: replaceable dialer
 	if err != nil {
 		return nil, "", err
 	}
