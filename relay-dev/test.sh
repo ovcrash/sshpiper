@@ -22,23 +22,27 @@ tester_ssh() {
 }
 
 load_backend_env 1
+u1="$SSH_USER" p1="$SSH_PASSWORD"
+load_backend_env 2
+u2="$SSH_USER" p2="$SSH_PASSWORD"
 
 echo "== backend1: effective sshd settings (sshd -T)"
 compose exec -T backend1 sh -c 'grep -n "^Include" /etc/ssh/sshd_config; sshd -T | grep -E "^(kexalgorithms|ciphers|macs|compression|passwordauthentication) "'
 
-for ip in 10.99.0.11 10.99.0.12; do
-	echo "== password login through the proxy ($SSH_USER@$ip)"
-	out="$(tester_ssh "$SSH_PASSWORD" -tt "$SSH_USER@$ip" 'echo "host=$(hostname) user=$(id -un) conn=$SSH_CONNECTION"' | tr -d '\r')"
+for spec in "10.99.0.11 $u1 $p1 backend1" "10.99.0.12 $u2 $p2 backend2"; do
+	set -- $spec
+	echo "== password login through the proxy ($2@$1)"
+	out="$(tester_ssh "$3" -tt "$2@$1" 'echo "host=$(hostname) user=$(id -un)"' | tr -d '\r')"
 	echo "$out"
-	if grep -q "host=backend1 user=$SSH_USER" <<<"$out"; then
-		pass "login via $ip lands on backend1"
+	if grep -q "host=$4 user=$2" <<<"$out"; then
+		pass "login via $1 lands on $4"
 	else
-		fail "login via $ip did not land on backend1"
+		fail "login via $1 did not land on $4"
 	fi
 done
 
 echo "== wrong password is refused"
-if tester_ssh "wrong-$SSH_PASSWORD" -o NumberOfPasswordPrompts=1 "$SSH_USER@10.99.0.11" true 2>&1; then
+if tester_ssh "wrong-$p1" -o NumberOfPasswordPrompts=1 "$u1@10.99.0.11" true 2>&1; then
 	fail "wrong password accepted"
 else
 	pass "wrong password refused"

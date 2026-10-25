@@ -7,7 +7,7 @@ set -euo pipefail
 mkdir -p "$RELAY_DEV_DIR/secrets" "$RELAY_DEV_DIR/audit"
 chmod 0700 "$RELAY_DEV_DIR/secrets" 2>/dev/null || true
 
-for n in 1 2; do
+for n in 1 2 3; do
 	f="$RELAY_DEV_DIR/secrets/backend$n.env"
 	if [ ! -f "$f" ]; then
 		umask 077
@@ -17,4 +17,5 @@ for n in 1 2; do
 done
 
 compose up --build --detach --wait "$@"
+"$(dirname "$0")/seed.sh"
 compose ps

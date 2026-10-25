@@ -1,7 +1,9 @@
 #!/bin/sh
-# Proxy entrypoint: add the test "external" addresses, then run sshpiperd.
-#   EXTERNAL_IPS    comma-separated IPv4 addresses to add (/32)
-#   EXTERNAL_IFACE  interface to add them to (default eth0)
+# Proxy entrypoint: add the test "external" addresses, make sure the registry
+# exists, then run sshpiperd.
+#   EXTERNAL_IPS        comma-separated IPv4 addresses to add (/32)
+#   EXTERNAL_IFACE      interface to add them to (default eth0)
+#   SSHPIPERD_REGISTRY  registry path; created when missing
 # Remaining arguments are passed to sshpiperd unchanged.
 set -eu
 
@@ -12,5 +14,9 @@ for ip in $(printf '%s' "${EXTERNAL_IPS:-}" | tr ',' ' '); do
 	fi
 done
 ip -4 -brief addr show dev "$iface"
+
+if [ -n "${SSHPIPERD_REGISTRY:-}" ]; then
+	/sshpiperd/registryctl init
+fi
 
 exec /sshpiperd/sshpiperd "$@"

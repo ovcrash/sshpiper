@@ -1,6 +1,6 @@
 name: relay-dev
 
-# Dev bench: an unmodified sshpiperd in front of two Ubuntu 24.04 sshd.
+# Dev bench: sshpiperd in registry mode in front of two Ubuntu 24.04 sshd.
 # The 10.99.0.x addresses are not reachable from a Windows/macOS host:
 # run every test from the tester container (see test.sh).
 
@@ -15,8 +15,10 @@ networks:
 
 volumes:
   proxy-hostkey:
+  proxy-registry:
   backend1-hostkeys:
   backend2-hostkeys:
+  backend3-hostkeys:
 
 services:
   proxy:
@@ -29,17 +31,21 @@ services:
       # extra "external" addresses added to eth0 by the entrypoint
       EXTERNAL_IPS: 10.99.0.11,10.99.0.12
       SSHPIPERD_PORT: "22"
-      SSHPIPERD_SERVER_KEY: /var/lib/sshpiperd/ssh_host_ed25519_key
-      SSHPIPERD_SERVER_KEY_GENERATE_MODE: notexist
+      SSHPIPERD_REGISTRY: /data/relay-registry.db
+      # the tester may reach entries that are ready but not yet exposed
+      SSHPIPERD_REGISTRY_VERIFY_FROM: 127.0.0.1,::1,10.99.0.100
       SSHPIPERD_LOG_LEVEL: ${SSHPIPERD_LOG_LEVEL:-info}
     command:
       - --screen-recording-dir=/audit
       - --screen-recording-format=asciicast
-      - /sshpiperd/plugins/fixed
-      - --target=backend1:22
+      - /sshpiperd/plugins/relay
     volumes:
-      - proxy-hostkey:/var/lib/sshpiperd
+      - proxy-registry:/data
       - ./audit:/audit
+      # backend host keys are written here by seed.sh
+      - backend1-hostkeys:/keys/backend1
+      - backend2-hostkeys:/keys/backend2
+      - backend3-hostkeys:/keys/backend3
     networks:
       relaynet:
         ipv4_address: 10.99.0.2
@@ -52,6 +58,8 @@ services:
       backend1:
         condition: service_healthy
       backend2:
+        condition: service_healthy
+      backend3:
         condition: service_healthy
 
   backend1:
@@ -80,10 +88,29 @@ services:
         ipv4_address: 10.99.0.22
     healthcheck: *sshd-health
 
+  backend3:
+    build: ./backend
+    hostname: backend3
+    env_file: ./secrets/backend3.env
+    volumes:
+      - backend3-hostkeys:/hostkeys
+    networks:
+      relaynet:
+        ipv4_address: 10.99.0.23
+    healthcheck: *sshd-health
+
   tester:
-    build: ./tester
+    build:
+      context: ..
+      dockerfile: relay-dev/tester/Dockerfile
     hostname: tester
     cap_add: [NET_ADMIN, NET_RAW]
+    environment:
+      SSHPIPERD_REGISTRY: /data/relay-registry.db
+    volumes:
+      # registryctl verify-front reads the personas (the proxy only allows
+      # this source for entries that are ready)
+      - proxy-registry:/data
     networks:
       relaynet:
         ipv4_address: 10.99.0.100
