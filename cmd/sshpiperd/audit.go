@@ -117,6 +117,12 @@ func auditFlags() []cli.Flag {
 			Usage:   "age after which stored file copies are deleted",
 			EnvVars: []string{"SSHPIPERD_AUDIT_FILE_RETENTION"},
 		},
+		&cli.DurationFlag{
+			Name:    "audit-log-retention",
+			Value:   90 * 24 * time.Hour,
+			Usage:   "age after which event logs and recordings are deleted (0 disables)",
+			EnvVars: []string{"SSHPIPERD_AUDIT_LOG_RETENTION"},
+		},
 	}
 }
 
@@ -137,6 +143,7 @@ func (d *daemon) setupAudit(ctx *cli.Context) error {
 		FileMaxSize:   ctx.Int64("audit-file-max-size"),
 		FileQuota:     ctx.Int64("audit-file-quota"),
 		FileRetention: ctx.Duration("audit-file-retention"),
+		LogRetention:  ctx.Duration("audit-log-retention"),
 	})
 	if err != nil {
 		return err

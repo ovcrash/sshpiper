@@ -19,6 +19,10 @@ type Options struct {
 	FileMaxSize   int64         // bytes stored per file (default 50 MB)
 	FileQuota     int64         // total bytes of stored files (default 5 GB)
 	FileRetention time.Duration // age after which stored files are deleted (default 90 days)
+
+	// LogRetention is the age after which day directories (events/casts) and
+	// all-<date>.jsonl files are deleted. Zero disables log pruning.
+	LogRetention time.Duration
 }
 
 // Writer serializes all audit output through one goroutine fed by a bounded
@@ -37,10 +41,12 @@ type Writer struct {
 	dropSince atomic.Int64 // unix micros of the first drop in the current streak
 
 	// touched only by the loop goroutine
-	files  map[string]*os.File
-	allDay string
-	all    *os.File
-	store  *fileStore
+	files        map[string]*os.File
+	allDay       string
+	all          *os.File
+	store        *fileStore
+	logRetention time.Duration
+	lastLogPrune time.Time
 }
 
 type record struct {
@@ -71,7 +77,9 @@ func NewWriter(opts Options) (*Writer, error) {
 		closing: make(chan struct{}),
 		files:   make(map[string]*os.File),
 	}
+	w.logRetention = opts.LogRetention
 	w.store = newFileStore(w, opts)
+	w.pruneLogs()
 	w.wg.Add(1)
 	go w.loop()
 	return w, nil
@@ -125,6 +133,7 @@ func (w *Writer) loop() {
 		case <-ticker.C:
 			w.reportDrops()
 			w.store.maybePrune()
+			w.maybePruneLogs()
 		case <-w.closing:
 			// drain what is already queued, then close files
 			for {
