@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/tg123/sshpiper/cmd/sshpiperd/internal/admin"
+	"github.com/tg123/sshpiper/cmd/sshpiperd/internal/audit"
 	"github.com/tg123/sshpiper/cmd/sshpiperd/internal/plugin"
 	"github.com/urfave/cli/v2"
 	"golang.org/x/crypto/ssh"
@@ -56,6 +57,11 @@ type daemon struct {
 	// personas selects the SSH identity per destination address when
 	// --registry is set (see relay.go); nil otherwise.
 	personas *personaStore // relay:
+
+	// audit writes the structured session record when --audit-dir is set
+	// (see audit.go); nil otherwise.
+	audit         *audit.Writer // relay:
+	auditShutdown time.Duration // relay:
 }
 
 func generateSshKey(keyfile string) error {
@@ -581,6 +587,12 @@ func (d *daemon) run() error {
 		go func(c net.Conn) {
 			defer c.Close()
 
+			sess, cc := d.startAudit(c) // relay: audit, returns c unchanged when disabled
+			c = cc
+			if sess != nil {
+				defer sess.Close()
+			}
+
 			piperConfig := &d.config.PiperConfig
 			if d.personas != nil { // relay: identity per destination address
 				piperConfig = d.personas.configFor(context.Background(), c.LocalAddr(), c.RemoteAddr())
@@ -609,6 +621,12 @@ func (d *daemon) run() error {
 
 			uphookchain := &hookChain{}
 			downhookchain := &hookChain{}
+
+			if sess != nil { // relay: record version/HASSH, install audit hooks
+				d.recordHandshake(sess, c)
+				uphookchain.append(ssh.InspectPacketHook(sess.Uphook))
+				downhookchain.append(ssh.InspectPacketHook(sess.Downhook))
+			}
 
 			// Register the live pipe with the admin registry (if enabled) so
 			// the admin gRPC service can list/kill/stream this session. The

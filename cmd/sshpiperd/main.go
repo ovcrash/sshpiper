@@ -462,6 +462,13 @@ func main() {
 				return err
 			}
 
+			if err := d.setupAudit(ctx); err != nil { // relay:
+				return err
+			}
+			if d.audit != nil {
+				defer d.audit.Close(d.auditShutdown)
+			}
+
 			d.recorddir = ctx.String("screen-recording-dir")
 			d.recordfmt = ctx.String("screen-recording-format")
 			d.usernameAsRecorddir = ctx.Bool("username-as-recorddir")
@@ -540,6 +547,7 @@ func main() {
 	}
 
 	app.Flags = append(app.Flags, relayFlags()...) // relay:
+	app.Flags = append(app.Flags, auditFlags()...) // relay:
 
 	if err := app.Run(os.Args); err != nil {
 		slog.Error("run failed", "error", err)

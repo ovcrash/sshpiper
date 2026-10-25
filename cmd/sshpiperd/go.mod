@@ -14,6 +14,7 @@ replace golang.org/x/crypto => github.com/tg123/sshpiper.crypto v0.57.0-sshpiper
 replace github.com/tg123/sshpiper => ../..
 
 require (
+	github.com/google/uuid v1.6.0
 	github.com/pires/go-proxyproto v0.12.0
 	github.com/ramr/go-reaper v0.3.1
 	github.com/tg123/remotesigner v0.0.3
@@ -28,7 +29,6 @@ require (
 require (
 	github.com/cpuguy83/go-md2man/v2 v2.0.7 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
-	github.com/google/uuid v1.6.0 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
