@@ -37,6 +37,7 @@ services:
       SSHPIPERD_REGISTRY_VERIFY_FROM: 127.0.0.1,::1,10.99.0.100
       SSHPIPERD_LOG_LEVEL: ${SSHPIPERD_LOG_LEVEL:-info}
       SSHPIPERD_PRESERVE_SOURCE_PORT: "true"
+      SSHPIPERD_COPY_CLIENT_VERSION: "true"
     command:
       - --audit-dir=/audit
       - --sensor-name=relay-dev

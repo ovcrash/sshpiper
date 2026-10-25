@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Source port checks: the backend must see the client's source port.
+# Upstream checks (M5): the backend sees the client's source port and the
+# client's own version line, and the audit records each backend connection.
 # The client port is forced with a ProxyCommand (nc -p PORT), so it is known.
 # Run against a bench started with up.sh.
 set -uo pipefail
@@ -76,8 +77,38 @@ else
 	echo "KNOWN: after a failed attempt the backend sees port '${got:-?}' instead of $p (each attempt opens a new connection; the previous one may still hold the port)"
 fi
 
+echo "== audit: backend connections of that session"
+f="$(compose exec -T proxy sh -c "grep -l '\"src_port\":$p,' /audit/*/*/events.jsonl | tail -1" | tr -d '\r')"
+seq="$(compose exec -T proxy cat "$f" 2>/dev/null | grep -o '"eventid":"piper\.[a-z_.]*"' | sed 's/.*piper\.//; s/"//' | tr '
+' ' ')"
+echo "   $seq"
+if [[ "$seq" == "session.connect client.version client.kex "* ]] &&
+	[[ "$seq" == *"backend.connected login.failed backend.disconnected backend.connected login.success"* ]]; then
+	pass "audit: version and HASSH before auth, then connected, failed, abandoned closed, reconnected, success"
+else
+	fail "unexpected audit sequence"
+fi
+n="$(compose exec -T proxy cat "$f" | grep '"eventid":"piper.backend.connected"' | grep -cE "\"local_port\":$p[,}]")"
+[ "$n" = "2" ] && pass "both backend connections recorded with local_port $p" || fail "local_port $p recorded $n time(s), want 2"
+
+echo "== client version on the backend wire"
+B="$(compose ps -q backend1)"
+docker rm -f relaycap >/dev/null 2>&1
+docker run -d --name relaycap --net "container:$B" --cap-add NET_RAW --cap-add NET_ADMIN 	--entrypoint tcpdump relay-dev-tester -i eth0 -l -A -s 300 'tcp dst port 22 and src host 10.99.0.2' >/dev/null
+sleep 3
+for c in ssh-9.8p1 ssh-8.0p1; do
+	compose exec -T -e SSHPASS="$SSH_PASSWORD" tester sshpass -e "$c" "${OPTS[@]}" "$SSH_USER@10.99.0.11" true >/dev/null 2>&1
+done
+sleep 1
+wire="$(docker logs relaycap 2>&1 | grep -ao 'SSH-2\.0-[A-Za-z0-9_.+-]*' | sort -u)"
+docker rm -f relaycap >/dev/null 2>&1
+for v in SSH-2.0-OpenSSH_9.8 SSH-2.0-OpenSSH_8.0; do
+	grep -qx "$v" <<<"$wire" && pass "backend receives the client version $v" || fail "backend did not receive $v"
+done
+grep -qx 'SSH-2.0-Go' <<<"$wire" && fail "backend still receives SSH-2.0-Go" || pass "backend never receives SSH-2.0-Go"
+
 if [ "$failures" -ne 0 ]; then
 	echo "$failures check(s) failed"
 	exit 1
 fi
-echo "all source port checks passed"
+echo "all upstream checks passed"
