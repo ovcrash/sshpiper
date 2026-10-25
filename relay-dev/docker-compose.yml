@@ -15,6 +15,7 @@ networks:
 
 volumes:
   proxy-hostkey:
+  proxy-audit:
   proxy-registry:
   backend1-hostkeys:
   backend2-hostkeys:
@@ -36,12 +37,12 @@ services:
       SSHPIPERD_REGISTRY_VERIFY_FROM: 127.0.0.1,::1,10.99.0.100
       SSHPIPERD_LOG_LEVEL: ${SSHPIPERD_LOG_LEVEL:-info}
     command:
-      - --screen-recording-dir=/audit
-      - --screen-recording-format=asciicast
+      - --audit-dir=/audit
+      - --sensor-name=relay-dev
       - /sshpiperd/plugins/relay
     volumes:
       - proxy-registry:/data
-      - ./audit:/audit
+      - proxy-audit:/audit
       # backend host keys are written here by seed.sh
       - backend1-hostkeys:/keys/backend1
       - backend2-hostkeys:/keys/backend2

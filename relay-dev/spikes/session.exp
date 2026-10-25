@@ -1,0 +1,21 @@
+# expect -f session.exp HOST USER PASSWORD
+# Opens an interactive shell, sets a stable prompt, types commands, resizes
+# the window, then exits with a non-zero status. Exercises the audit of
+# input, output, window-change and exit status.
+set host [lindex $argv 0]
+set user [lindex $argv 1]
+set pass [lindex $argv 2]
+set timeout 20
+spawn ssh -tt -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+	-o PreferredAuthentications=password -o PubkeyAuthentication=no $user@$host
+expect "password:"
+send "$pass\r"
+expect -re {[$#] $}
+send "export PS1='READY> '\r"
+expect "READY> "
+send "echo hello-world\r"
+expect "READY> "
+send "whoami\r"
+expect "READY> "
+send "exit 7\r"
+expect eof
