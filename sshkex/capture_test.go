@@ -13,7 +13,7 @@ import (
 func refValue(t *testing.T, ref, key string) string {
 	t.Helper()
 	for _, line := range strings.Split(ref, "\n") {
-		if v, ok := strings.CutPrefix(line, key+": "); ok {
+		if v, ok := strings.CutPrefix(strings.TrimSuffix(line, "\r"), key+": "); ok {
 			return v
 		}
 	}
