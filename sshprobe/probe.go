@@ -192,5 +192,8 @@ func Login(ctx context.Context, addr, user string, auth ssh.AuthMethod, expected
 	if err != nil {
 		return err
 	}
-	return conn.Close()
+	// authentication succeeded; the peer may already have closed the
+	// connection, which is not a failure of the login
+	_ = conn.Close()
+	return nil
 }

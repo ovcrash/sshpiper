@@ -94,12 +94,10 @@ func probeEntry(ctx context.Context, db *registry.DB, e *registry.Entry) error {
 		return err
 	}
 
-	live := e.State == registry.StateReady || e.State == registry.StateExposed
-	if !live {
-		if e.State == registry.StateDraft || e.State == registry.StateNeedsCheck {
-			if err := moveTo(ctx, db, e, registry.StateProbing, "probe started"); err != nil {
-				return err
-			}
+	// ready and exposed entries are re-probed in place to detect drift
+	if e.State == registry.StateDraft || e.State == registry.StateNeedsCheck {
+		if err := moveTo(ctx, db, e, registry.StateProbing, "probe started"); err != nil {
+			return err
 		}
 	}
 
@@ -119,9 +117,10 @@ func probeEntry(ctx context.Context, db *registry.DB, e *registry.Entry) error {
 	}
 
 	if len(problems) > 0 {
-		if e.State == registry.StateExposed {
+		switch e.State {
+		case registry.StateExposed:
 			_ = moveTo(ctx, db, e, registry.StateNeedsCheck, strings.Join(problems, "; "))
-		} else if e.State == registry.StateReady {
+		case registry.StateReady:
 			_ = moveTo(ctx, db, e, registry.StateProbing, strings.Join(problems, "; "))
 		}
 		return errors.New(strings.Join(problems, "\n    "))
