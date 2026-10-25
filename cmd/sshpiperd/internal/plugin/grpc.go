@@ -180,7 +180,7 @@ func (g *GrpcPlugin) CreateChallengeContext(conn ssh.ServerPreAuthConn) (ssh.Cha
 			UserName: conn.User(),
 			FromAddr: conn.RemoteAddr().String(),
 			UniqId:   uiq.String(),
-			Metadata: make(map[string]string),
+			Metadata: initialMetadata(conn), // relay: expose the destination address
 		},
 	}
 
