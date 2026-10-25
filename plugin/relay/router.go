@@ -58,33 +58,40 @@ func (r *router) newConnection(conn libplugin.ConnMetadata) error {
 	return err
 }
 
-// nextAuthMethods lists the methods of the entry, in the order announced by
-// the backend when it was probed.
+// nextAuthMethods announces the methods the backend announced when it was
+// probed (those this plugin can carry), whether or not the entry's credential
+// uses them: a client must see the same offer as on the backend. Attempts
+// that do not match the credential are refused by the other callbacks. An
+// entry that was never probed offers the methods of its credential.
 func (r *router) nextAuthMethods(conn libplugin.ConnMetadata) ([]string, error) {
 	e, err := r.entryFor(conn)
 	if err != nil {
 		return nil, err
 	}
 
-	enabled := map[string]bool{"password": e.AuthPassword, "publickey": e.AuthKey}
-
 	ctx, cancel := context.WithTimeout(context.Background(), lookupTimeout)
 	defer cancel()
 
-	var order []string
-	if p, err := r.db.Persona(ctx, e.ID); err == nil {
-		order = strings.Split(p.AuthMethods, ",")
-	}
-	order = append(order, "password", "publickey")
-
 	var methods []string
-	seen := map[string]bool{}
-	for _, m := range order {
-		m = strings.TrimSpace(m)
-		if enabled[m] && !seen[m] {
-			seen[m] = true
-			methods = append(methods, m)
+	if p, err := r.db.Persona(ctx, e.ID); err == nil {
+		seen := map[string]bool{}
+		for _, m := range strings.Split(p.AuthMethods, ",") {
+			m = strings.TrimSpace(m)
+			if (m == "password" || m == "publickey") && !seen[m] {
+				seen[m] = true
+				methods = append(methods, m)
+			}
 		}
+	}
+	if len(methods) > 0 {
+		return methods, nil
+	}
+
+	if e.AuthPassword {
+		methods = append(methods, "password")
+	}
+	if e.AuthKey {
+		methods = append(methods, "publickey")
 	}
 	return methods, nil
 }

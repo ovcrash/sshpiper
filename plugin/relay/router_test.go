@@ -183,13 +183,36 @@ func TestPublicKey(t *testing.T) {
 func TestNextAuthMethods(t *testing.T) {
 	f := newFixture(t)
 
-	got, err := f.r.nextAuthMethods(connTo("", "192.0.2.10:22"))
-	if err != nil || strings.Join(got, ",") != "password" {
-		t.Errorf("password entry: %v, %v", got, err)
+	// probed entries offer what the backend offered, in its order,
+	// whatever their own credential is
+	for _, dst := range []string{"192.0.2.10:22", "192.0.2.11:22"} {
+		got, err := f.r.nextAuthMethods(connTo("", dst))
+		if err != nil || strings.Join(got, ",") != "publickey,password" {
+			t.Errorf("%s: %v, %v", dst, got, err)
+		}
 	}
-	got, err = f.r.nextAuthMethods(connTo("", "192.0.2.11:22"))
-	if err != nil || strings.Join(got, ",") != "publickey" {
-		t.Errorf("key entry: %v, %v", got, err)
+
+	// an entry without persona offers the methods of its credential
+	ctx := context.Background()
+	for ip, want := range map[string]string{"192.0.2.20": "password", "192.0.2.21": "publickey"} {
+		n := registry.NewEntry{ExternalIP: ip, Username: "u", BackendHost: "h", Password: "p"}
+		if want == "publickey" {
+			_, pubLine, priv := keyPair(t)
+			n.Password, n.PublicKey, n.PrivateKey = "", pubLine, priv
+		}
+		e, err := f.rw.Create(ctx, n)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, s := range []registry.State{registry.StateProbing, registry.StateReady} {
+			if err := f.rw.SetState(ctx, e.ID, s, ""); err != nil {
+				t.Fatal(err)
+			}
+		}
+		got, err := f.r.nextAuthMethods(connTo("", ip+":22"))
+		if err != nil || strings.Join(got, ",") != want {
+			t.Errorf("%s without persona: %v, %v; want %s", ip, got, err, want)
+		}
 	}
 }
 
