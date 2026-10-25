@@ -608,6 +608,9 @@ func (d *daemon) run() error {
 			p := d.establishPipe(c, func() (*ssh.PiperConn, error) {
 				return ssh.NewSSHPiperConn(c, piperConfig)
 			})
+			if sess != nil { // relay: record version/HASSH even for a failed handshake (recon)
+				d.recordHandshake(sess, c)
+			}
 			if p == nil {
 				return
 			}
@@ -625,8 +628,7 @@ func (d *daemon) run() error {
 			uphookchain := &hookChain{}
 			downhookchain := &hookChain{}
 
-			if sess != nil { // relay: record version/HASSH, install audit hooks
-				d.recordHandshake(sess, c)
+			if sess != nil { // relay: install audit hooks on the established pipe
 				sess.LoginSuccess() // the pipe exists: the backend accepted the client
 				uphookchain.append(ssh.InspectPacketHook(sess.Uphook))
 				downhookchain.append(ssh.InspectPacketHook(sess.Downhook))

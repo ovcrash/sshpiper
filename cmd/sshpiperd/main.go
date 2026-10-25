@@ -458,15 +458,17 @@ func main() {
 				return err
 			}
 
-			if err := d.setupPersonas(ctx); err != nil { // relay:
-				return err
-			}
-
-			if err := d.setupAudit(ctx); err != nil { // relay:
+			// relay: audit first, so the auth-callback wrappers are in
+			// place before setupPersonas snapshots the base config.
+			if err := d.setupAudit(ctx); err != nil {
 				return err
 			}
 			if d.audit != nil {
 				defer d.audit.Close(d.auditShutdown)
+			}
+
+			if err := d.setupPersonas(ctx); err != nil { // relay:
+				return err
 			}
 
 			d.recorddir = ctx.String("screen-recording-dir")
