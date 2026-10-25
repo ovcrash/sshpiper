@@ -9,7 +9,6 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/tg123/sshpiper/cmd/sshpiperd/internal/plugin"
 	"github.com/urfave/cli/v2"
 )
 
@@ -21,14 +20,6 @@ func sourcePortFlags() []cli.Flag {
 			EnvVars: []string{"SSHPIPERD_PRESERVE_SOURCE_PORT"},
 		},
 	}
-}
-
-func setupSourcePort(ctx *cli.Context) {
-	if !ctx.Bool("preserve-source-port") {
-		return
-	}
-	plugin.DialUpstream = dialKeepSourcePort
-	slog.Info("upstream connections keep the client source port when possible")
 }
 
 // Every authentication attempt opens a new upstream connection, and the SSH
@@ -45,10 +36,15 @@ var upstreams = struct {
 
 type trackedConn struct {
 	net.Conn
-	key string
+	key     string
+	onClose func(net.Conn) // optional, called once on the first Close
+	once    sync.Once
 }
 
 func (t *trackedConn) Close() error {
+	if t.onClose != nil {
+		t.once.Do(func() { t.onClose(t.Conn) })
+	}
 	upstreams.mu.Lock()
 	list := upstreams.m[t.key]
 	for i, c := range list {
@@ -117,9 +113,19 @@ func clientPort(downstream net.Addr) int {
 // exists), it falls back to an ephemeral port, so a login is never refused
 // because of this option.
 func dialKeepSourcePort(network, addr string, downstream net.Addr) (net.Conn, error) {
+	return dialKeepSourcePortHook(network, addr, downstream, nil)
+}
+
+// dialKeepSourcePortHook is dialKeepSourcePort with a hook run when the
+// returned connection is closed, including when an abandoned attempt is reset.
+func dialKeepSourcePortHook(network, addr string, downstream net.Addr, onClose func(net.Conn)) (net.Conn, error) {
 	port := clientPort(downstream)
 	if port == 0 || !strings.HasPrefix(network, "tcp") {
-		return net.Dial(network, addr)
+		c, err := net.Dial(network, addr)
+		if err != nil {
+			return nil, err
+		}
+		return withCloseHook(c, onClose), nil
 	}
 	key := downstream.String()
 
@@ -137,9 +143,28 @@ func dialKeepSourcePort(network, addr string, downstream net.Addr) (net.Conn, er
 		}
 	}
 
-	t := &trackedConn{Conn: c, key: key}
+	t := &trackedConn{Conn: c, key: key, onClose: onClose}
 	upstreams.mu.Lock()
 	upstreams.m[key] = append(upstreams.m[key], t)
 	upstreams.mu.Unlock()
 	return t, nil
+}
+
+// hookConn runs a hook once when closed (connections that are not tracked).
+type hookConn struct {
+	net.Conn
+	onClose func(net.Conn)
+	once    sync.Once
+}
+
+func (h *hookConn) Close() error {
+	h.once.Do(func() { h.onClose(h.Conn) })
+	return h.Conn.Close()
+}
+
+func withCloseHook(c net.Conn, onClose func(net.Conn)) net.Conn {
+	if onClose == nil {
+		return c
+	}
+	return &hookConn{Conn: c, onClose: onClose}
 }

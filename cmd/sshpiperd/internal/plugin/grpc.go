@@ -301,6 +301,9 @@ func (g *GrpcPlugin) createUpstream(conn ssh.ConnMetadata, challengeCtx ssh.Chal
 		User:            upstream.UserName,
 		HostKeyCallback: g.buildHostKeyCallback(meta, upstream),
 	}
+	if CopyClientVersion { // relay: announce the client's own version upstream
+		config.ClientVersion = string(conn.ClientVersion())
+	}
 
 	config.SetDefaults()
 
