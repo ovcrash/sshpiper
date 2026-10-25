@@ -1,0 +1,13 @@
+# Spike override: run the proxy with the trace plugin and debug logs.
+#   docker compose -f docker-compose.yml -f docker-compose.spike.yml up -d
+# SPIKE_NEXT_METHODS sets the list returned by NextAuthMethods (empty: no callback).
+services:
+  proxy:
+    environment:
+      SSHPIPERD_LOG_LEVEL: debug
+      SSHPIPERD_TRACEPLUGIN_NEXT_METHODS: ${SPIKE_NEXT_METHODS:-}
+    command:
+      - --screen-recording-dir=/audit
+      - --screen-recording-format=asciicast
+      - /sshpiperd/plugins/traceplugin
+      - --target=backend1:22

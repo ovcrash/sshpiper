@@ -7,7 +7,7 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
     --mount=type=cache,target=/go/pkg/mod \
     mkdir -p /out/plugins \
  && (cd cmd/sshpiperd && go build -o /out/sshpiperd .) \
- && go build -tags full -o /out/plugins ./plugin/...
+ && go build -tags full -o /out/plugins ./plugin/... ./relay-dev/spikes/...
 
 FROM docker.io/debian:bookworm-slim
 RUN apt-get update \

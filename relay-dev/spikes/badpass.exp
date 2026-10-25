@@ -1,0 +1,29 @@
+# Spike helper: expect -f badpass.exp HOST USER
+# Answers every password prompt with a wrong password and prints, with
+# timestamps, each prompt and the server's final message.
+set host [lindex $argv 0]
+set user [lindex $argv 1]
+set timeout 30
+set t0 [clock milliseconds]
+proc ts {} {
+	global t0
+	return [format "%6.3f" [expr {([clock milliseconds] - $t0) / 1000.0}]]
+}
+log_user 0
+spawn ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+	-o PreferredAuthentications=password -o NumberOfPasswordPrompts=10 $user@$host true
+set n 0
+expect {
+	-re {password: $} {
+		incr n
+		puts "[ts] prompt $n"
+		send "wrongpass$n\r"
+		exp_continue
+	}
+	-re {(Received disconnect[^\r\n]*|Too many[^\r\n]*|Permission denied \([^\r\n]*|Connection closed[^\r\n]*)} {
+		puts "[ts] $expect_out(1,string)"
+		exp_continue
+	}
+	eof { puts "[ts] eof after $n prompts" }
+	timeout { puts "[ts] timeout after $n prompts" }
+}
