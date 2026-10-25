@@ -50,6 +50,8 @@ func newApp() *cli.App {
 			listCommand(),
 			showCommand(),
 			personaCommand(),
+			probeCommand(),
+			verifyFrontCommand(),
 			exposeCommand(),
 			retireCommand(),
 			exportCommand(),
