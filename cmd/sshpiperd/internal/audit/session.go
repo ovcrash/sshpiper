@@ -42,6 +42,7 @@ type Session struct {
 	lastAttempt   attempt
 	offered       []string
 	loggedSuccess bool
+	closed        bool
 }
 
 type addr struct {
@@ -87,6 +88,11 @@ func (s *Session) newEvent(id string) *Event {
 }
 
 func (s *Session) emit(ev *Event) {
+	s.mu.Lock()
+	if s.closed {
+		ev.Late = true
+	}
+	s.mu.Unlock()
 	if ev.Session == "" {
 		ev.Session = s.id
 		ev.SrcIP, ev.SrcPort = s.src.ip, s.src.port
@@ -104,6 +110,9 @@ func (s *Session) Close() {
 	ev := s.newEvent(EventSessClosed)
 	ev.DurationMs = time.Since(s.start).Milliseconds()
 	s.emit(ev)
+	s.mu.Lock()
+	s.closed = true
+	s.mu.Unlock()
 	s.w.CloseSession(s.id)
 }
 

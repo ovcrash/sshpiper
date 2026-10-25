@@ -8,16 +8,25 @@ import (
 	"strconv"
 
 	"github.com/tg123/sshpiper/cmd/sshpiperd/internal/audit"
+	"github.com/tg123/sshpiper/sshkex"
 	"github.com/urfave/cli/v2"
 	"golang.org/x/crypto/ssh"
 )
 
 // auditSessionFor returns the session recording the connection of conn, or nil.
 func (d *daemon) auditSessionFor(conn ssh.ConnMetadata) *audit.Session {
-	if conn == nil || conn.RemoteAddr() == nil {
+	if conn == nil {
 		return nil
 	}
-	if v, ok := d.auditByAddr.Load(conn.RemoteAddr().String()); ok {
+	return d.auditSessionForAddr(conn.RemoteAddr())
+}
+
+// auditSessionForAddr returns the session of the client at downstream, or nil.
+func (d *daemon) auditSessionForAddr(downstream net.Addr) *audit.Session {
+	if downstream == nil {
+		return nil
+	}
+	if v, ok := d.auditByAddr.Load(downstream.String()); ok {
 		return v.(*audit.Session)
 	}
 	return nil
@@ -127,6 +136,8 @@ func (d *daemon) startAudit(c net.Conn) (*audit.Session, net.Conn) {
 	srcIP, srcPort := splitAddr(c.RemoteAddr())
 	dstIP, dstPort := splitAddr(c.LocalAddr())
 	sess := audit.NewSession(d.audit, cc.sessionID, srcIP, srcPort, dstIP, dstPort)
+	// version and HASSH as soon as they arrive, before authentication
+	cc.onHandshake = func(version string, kex *sshkex.KexInit) { emitHandshake(sess, version, kex) }
 	if c.RemoteAddr() != nil {
 		d.auditByAddr.Store(c.RemoteAddr().String(), sess)
 	}
@@ -140,8 +151,8 @@ func (d *daemon) endAudit(c net.Conn) {
 	}
 }
 
-// recordHandshake emits the client version and KEXINIT events once the
-// handshake bytes have been captured.
+// recordHandshake emits the client version and KEXINIT events if the capture
+// completed without being reported yet (fallback for onHandshake).
 func (d *daemon) recordHandshake(sess *audit.Session, c net.Conn) {
 	cc, ok := c.(*captureConn)
 	if !ok {
@@ -151,6 +162,10 @@ func (d *daemon) recordHandshake(sess *audit.Session, c net.Conn) {
 	if !ok {
 		return
 	}
+	emitHandshake(sess, version, kex)
+}
+
+func emitHandshake(sess *audit.Session, version string, kex *sshkex.KexInit) {
 	sess.Emit(&audit.Event{EventID: audit.EventVersion, Version: version, Message: "client version " + version})
 	ev := &audit.Event{
 		EventID:         audit.EventKex,

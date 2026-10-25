@@ -29,6 +29,10 @@ const (
 	EventChanExit    = "piper.channel.exit"
 	EventSessClosed  = "piper.session.closed"
 	EventDropped     = "piper.audit.dropped"
+
+	EventBackendConnected    = "piper.backend.connected"
+	EventBackendDisconnected = "piper.backend.disconnected"
+	EventBackendConnectError = "piper.backend.connect_error"
 )
 
 // Event is one audit record. The envelope fields are always present; the
@@ -82,6 +86,11 @@ type Event struct {
 	ShaSum          string   `json:"shasum,omitempty"`
 	Count           int64    `json:"count,omitempty"`
 	Since           string   `json:"since,omitempty"`
+	BackendIP       string   `json:"backend_ip,omitempty"`
+	BackendPort     int      `json:"backend_port,omitempty"`
+	LocalIP         string   `json:"local_ip,omitempty"`
+	LocalPort       int      `json:"local_port,omitempty"`
+	Error           string   `json:"error,omitempty"`
 }
 
 func nowRFC3339Micro() string {

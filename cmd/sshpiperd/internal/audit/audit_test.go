@@ -3,6 +3,8 @@ package audit
 import (
 	"encoding/binary"
 	"encoding/json"
+	"errors"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -310,5 +312,33 @@ func TestHooksNeverPanic(t *testing.T) {
 		if err := sess.Uphook(p); err != nil {
 			t.Errorf("uphook returned error: %v", err)
 		}
+	}
+}
+
+func TestBackendEvents(t *testing.T) {
+	w, dir := newTestWriter(t)
+	sess := NewSession(w, "sess-backend", "198.51.100.7", 40000, "203.0.113.10", 22)
+	local := &net.TCPAddr{IP: net.ParseIP("10.99.0.2"), Port: 40000}
+	remote := &net.TCPAddr{IP: net.ParseIP("10.99.0.21"), Port: 22}
+
+	sess.BackendConnected(local, remote)
+	sess.BackendConnectError("10.99.0.21:22", errors.New("connection refused"))
+	sess.Close()
+	// an abandoned attempt released after the session ended
+	sess.BackendDisconnected(local, remote)
+	w.Close(5 * time.Second)
+
+	evs := readEvents(t, dir, "sess-backend")
+	c := findEvents(evs, EventBackendConnected)
+	if len(c) != 1 || c[0].LocalPort != 40000 || c[0].BackendIP != "10.99.0.21" || c[0].BackendPort != 22 || c[0].Late {
+		t.Fatalf("connected = %+v", c)
+	}
+	e := findEvents(evs, EventBackendConnectError)
+	if len(e) != 1 || e[0].Error != "connection refused" || e[0].BackendPort != 22 {
+		t.Fatalf("connect_error = %+v", e)
+	}
+	d := findEvents(evs, EventBackendDisconnected)
+	if len(d) != 1 || !d[0].Late || d[0].LocalPort != 40000 {
+		t.Fatalf("disconnected = %+v (must be marked late)", d)
 	}
 }
