@@ -1,0 +1,247 @@
+Relay proxy — manual deployment on an Ubuntu EC2 instance
+=========================================================
+
+This is a step-by-step manual deploy on a single Ubuntu EC2 VM (no containers).
+It builds on deploy/INSTALL.txt and adds the AWS-specific parts: the Go
+toolchain, secondary private IPs + Elastic IPs, the ens5 interface, and the
+security groups. Go 1.27, no CGO.
+
+Topology
+--------
+  Internet
+     |  (one Elastic IP per entry)
+     v
+  [ EC2 proxy VM ]  ens5: primary private IP + one SECONDARY private IP / entry
+     - sshpiperd + relay plugin  (listens on :22 of every secondary private IP)
+     - relay-admind              (REST API + console, bound to localhost)
+     |  (private VPC traffic to each backend)
+     v
+  [ backend VM(s) ]  the real Ubuntu SSH targets, created outside this project
+
+Key idea: on EC2 the proxy does NOT see your public Elastic IPs. A client hits
+the Elastic IP, AWS NATs it to the SECONDARY PRIVATE IP it is associated with,
+and the proxy sees the connection arriving on that private IP. So an "external
+IP" in the registry / RELAY_EXTERNAL_IPS is the secondary PRIVATE IP; the
+Elastic IP is only the public face. (The entry's Expose IP may differ from the
+backend's own address — that is expected behind NAT.)
+
+
+1. AWS: networking (console or CLI, done once per entry)
+--------------------------------------------------------
+Pick the proxy instance's primary network interface (ENI), e.g. eni-0abc...,
+and its subnet range, e.g. 10.0.1.0/24.
+
+a) Assign one secondary private IP per entry to the ENI:
+     aws ec2 assign-private-ip-addresses \
+       --network-interface-id eni-0abc... \
+       --private-ip-addresses 10.0.1.11 10.0.1.12
+   (Or: EC2 console -> Network interfaces -> the ENI -> Actions ->
+   Manage IP addresses -> Assign new IP.)
+
+b) Allocate one Elastic IP per entry and associate it with a secondary IP:
+     aws ec2 allocate-address --domain vpc            # -> AllocationId eipalloc-...
+     aws ec2 associate-address \
+       --allocation-id eipalloc-... \
+       --network-interface-id eni-0abc... \
+       --private-ip-address 10.0.1.11
+
+c) Leave the ENI's "source/destination check" ENABLED (default): all traffic
+   is destined to the instance's own IPs, so no change is needed.
+
+d) Security group on the proxy instance:
+     - inbound TCP 22 from 0.0.0.0/0      (the entries must be reachable)
+     - inbound TCP <host-sshd-port> from YOUR admin CIDR only (see step 5)
+     - the relay-admind port stays on localhost (step 8), so no SG rule; reach
+       it through an SSH tunnel.
+   The backend VMs' security group allows SSH only from the proxy's private IP.
+
+
+2. OS packages and the Go toolchain
+-----------------------------------
+     sudo apt-get update
+     sudo apt-get install -y git ca-certificates openssh-client
+
+Install Go matching go.mod (go 1.27.0). On a fresh Ubuntu, Go is not present:
+     cd /tmp
+     curl -fsSLO https://go.dev/dl/go1.27.0.linux-amd64.tar.gz
+     sudo rm -rf /usr/local/go && sudo tar -C /usr/local -xzf go1.27.0.linux-amd64.tar.gz
+     echo 'export PATH=$PATH:/usr/local/go/bin' | sudo tee /etc/profile.d/go.sh
+     export PATH=$PATH:/usr/local/go/bin
+     go version        # expect go1.27.0
+
+(Alternative: build the four binaries on another host or in the
+golang:1.27-bookworm image and scp them to /usr/local/bin — then skip the Go
+install and step 3's build, and just copy the binaries.)
+
+
+3. Get the code and build
+-------------------------
+     git clone -b relay https://github.com/ovcrash/sshpiper
+     cd sshpiper
+     sudo env PATH=$PATH ./deploy/build.sh      # -> /usr/local/bin/{sshpiperd,relay,registryctl,relay-admind}
+
+build.sh is pure Go, no CGO. The console UI bundle is committed, so no Node is
+needed. It prints the four binaries when done.
+
+
+4. Service user and directories
+-------------------------------
+     sudo useradd --system --no-create-home relay 2>/dev/null || true
+     sudo mkdir -p /etc/relay /var/lib/relay
+     sudo chown -R relay:relay /var/lib/relay
+     sudo chmod 700 /var/lib/relay
+
+
+5. Free port 22 for the proxy
+-----------------------------
+The proxy answers on :22 of every secondary private IP. The host's own
+administration sshd must not collide with it. Move the host sshd to another
+port BEFORE starting the proxy, or you will lock yourself out:
+     sudo sed -i 's/^#\?Port .*/Port 2222/' /etc/ssh/sshd_config
+     sudo systemctl restart ssh
+Open that port to your admin CIDR in the security group (step 1d), reconnect on
+it (ssh -p 2222 ubuntu@<proxy>), and confirm it works before continuing.
+
+
+6. Configure /etc/relay/relay.env
+---------------------------------
+     sudo cp deploy/relay.env.example /etc/relay/relay.env
+     sudo nano /etc/relay/relay.env
+
+Set, for EC2:
+     SSHPIPERD_PORT=22
+     SSHPIPERD_REGISTRY=/var/lib/relay/registry.db
+     SSHPIPERD_AUDIT_DIR=/var/lib/relay/audit
+     SSHPIPERD_PRESERVE_SOURCE_PORT=true
+     SSHPIPERD_COPY_CLIENT_VERSION=true
+     RELAY_EXTERNAL_IPS=10.0.1.11,10.0.1.12       # the SECONDARY PRIVATE IPs
+     RELAY_EXTERNAL_IFACE=ens5                     # NOT eth0 on EC2 Nitro
+     RELAY_ADMIN_ADDRESS=127.0.0.1:8090
+     RELAY_ADMIN_TLS_CERT=/etc/relay/admind.crt
+     RELAY_ADMIN_TLS_KEY=/etc/relay/admind.key
+     RELAY_ADMIN_TOKEN_FILE=/etc/relay/admind.token
+
+Check the interface name first:  ip -br link   (usually ens5; could be enX0).
+run-proxy.sh adds each RELAY_EXTERNAL_IPS address to that interface at start
+(ip addr add), so the OS-level config is reapplied on every boot — the AWS-side
+assignment from step 1a is what persists.
+
+
+7. Proxy as a systemd service
+------------------------------
+     sudo install -m755 deploy/run-proxy.sh /usr/local/bin/relay-run-proxy
+     sudo cp deploy/relay-proxy.service /etc/systemd/system/
+     sudo systemctl daemon-reload
+     sudo systemctl enable --now relay-proxy
+     systemctl status relay-proxy
+     journalctl -u relay-proxy -f        # should show the external IPs being added
+
+The unit runs as the relay user with AmbientCapabilities CAP_NET_ADMIN (to add
+the addresses) and CAP_NET_BIND_SERVICE (to bind :22), and flushes the audit on
+SIGTERM.
+
+
+8. Registration API + console (relay-admind) as a service
+----------------------------------------------------------
+Create the TLS cert and the bearer token:
+     sudo openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
+       -keyout /etc/relay/admind.key -out /etc/relay/admind.crt -subj /CN=relay-admind
+     sudo sh -c 'head -c32 /dev/urandom | base64 > /etc/relay/admind.token'
+     sudo chown relay:relay /etc/relay/admind.*
+     sudo chmod 600 /etc/relay/admind.key /etc/relay/admind.token
+     sudo cat /etc/relay/admind.token        # note it for the console/API
+
+Install the service:
+     sudo cp deploy/relay-admind.service /etc/systemd/system/
+     sudo systemctl daemon-reload
+     sudo systemctl enable --now relay-admind
+     systemctl status relay-admind
+
+It binds 127.0.0.1:8090 only. It reads the same registry the proxy reads (SQLite
+WAL serializes the two writers) and SSHPIPERD_AUDIT_DIR for read-only audit, so
+entries can be registered and the audit browsed with no proxy restart.
+
+Reach the console from your laptop over an SSH tunnel (nothing is exposed to the
+internet):
+     ssh -p 2222 -L 8090:127.0.0.1:8090 ubuntu@<proxy-public-ip>
+Then open  https://127.0.0.1:8090/  , accept the self-signed cert, and paste the
+token. Or drive the REST API with curl --cacert /etc/relay/admind.crt.
+
+
+9. Register an entry (per backend VM)
+-------------------------------------
+The backend Ubuntu VM is created outside this project. For each entry:
+
+     sudo RELAY_ENV=/etc/relay/relay.env ./deploy/register-entry.sh \
+       --ip 10.0.1.11 --user alice --backend 10.0.2.21 --password-file pw.txt
+
+   --ip        the SECONDARY PRIVATE IP for this entry (matches RELAY_EXTERNAL_IPS)
+   --backend   the backend VM's private IP (reachable from the proxy)
+   --user      the username the attacker will use
+   credentials: --password-file, or --private-key/--public-key
+
+The script generates the entry's host keys, prints a temp directory, and waits.
+Install those keys on the backend VM and restart its sshd, then press Enter:
+     scp -P 2222 <keydir>/ssh_host_* ubuntu@<backend>:/tmp/      # or any transfer
+     # on the backend, as root:
+     sudo cp /tmp/ssh_host_* /etc/ssh/ && sudo chmod 600 /etc/ssh/ssh_host_*_key
+     sudo systemctl restart ssh
+The script then probes the backend and, if the persona matches, exposes the
+entry. From that point a client hitting the Elastic IP associated with
+10.0.1.11 is proxied to the backend, with its session fully audited.
+
+You can also register entries through the console or the REST API (step 8)
+instead of this script; both need no proxy restart.
+
+
+10. Verify end to end
+---------------------
+From outside AWS, against the Elastic IP of an exposed entry:
+     ssh alice@<elastic-ip-of-10.0.1.11>
+You should land on the backend. In the console, the entry shows state "exposed"
+and the session appears under Audit (timeline, asciicast playback, any captured
+files). Retire an entry with:
+     sudo registryctl retire --ip 10.0.1.11      # or the console's Retire button
+
+
+11. Manage the services (systemctl)
+-----------------------------------
+Steps 7 and 8 install both units with "enable --now", so the proxy and the
+registration API/console start automatically at every boot. Day-to-day control:
+
+     sudo systemctl start   relay-proxy     # start now
+     sudo systemctl stop    relay-proxy     # stop now (SIGTERM flushes the audit)
+     sudo systemctl restart relay-proxy     # restart (drops active sessions)
+     sudo systemctl status  relay-proxy     # running state + last log lines
+     sudo systemctl enable  relay-proxy     # start at boot (already done in step 7)
+     sudo systemctl disable relay-proxy     # do NOT start at boot
+     journalctl -u relay-proxy -f           # follow the logs live
+
+The same commands apply to the API/console service, relay-admind:
+     sudo systemctl start|stop|restart|status|enable|disable relay-admind
+     journalctl -u relay-admind -f
+
+After editing /etc/relay/relay.env, restart the services to pick it up:
+     sudo systemctl restart relay-proxy relay-admind
+After editing a .service unit file itself, reload systemd first:
+     sudo systemctl daemon-reload && sudo systemctl restart relay-proxy
+
+Check both are active after a reboot:
+     systemctl is-enabled relay-proxy relay-admind     # -> enabled
+     systemctl is-active  relay-proxy relay-admind      # -> active
+
+
+Operational notes
+------------------
+- Secrets (passwords, private keys) live in the registry in clear text, mode
+  0600. Protect /var/lib/relay and its backups (and EBS snapshots).
+- The audit under SSHPIPERD_AUDIT_DIR grows with traffic (events.jsonl,
+  asciicast, captured files). Retention defaults to 90 days; size the EBS volume
+  accordingly and snapshot it.
+- To add another entry later with no downtime: assign one more secondary
+  private IP + Elastic IP (step 1); add the private IP to the interface live
+  (sudo ip addr add 10.0.1.13/32 dev ens5) so running sessions are not dropped;
+  append it to RELAY_EXTERNAL_IPS in relay.env so it is re-added on the next
+  boot; then register the entry (step 9). The daemon serves the new entry
+  without a restart.
+- relay-dev/ is the Docker dev bench, not for production.
