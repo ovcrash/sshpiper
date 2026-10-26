@@ -1,0 +1,8 @@
+# Used by BuildKit for relay-dev/proxy/Dockerfile (context: repo root).
+# Keep secrets and local state out of the build context.
+.git
+**/*.db
+**/*.db-*
+relay-dev/secrets
+relay-dev/audit
+e2e/bench-profiles

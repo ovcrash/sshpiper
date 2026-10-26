@@ -12,7 +12,7 @@ FROM docker.io/debian:bookworm-slim
 RUN apt-get update \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
       openssh-client sshpass nmap tcpdump python3 python3-venv jq expect \
-      iproute2 iputils-ping netcat-openbsd ca-certificates \
+      iproute2 iputils-ping netcat-openbsd curl ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 
 # Debian refuses system-wide pip installs (PEP 668): use a venv.
