@@ -20,6 +20,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/tg123/sshpiper/auditindex"
 	"github.com/tg123/sshpiper/registry"
 	"github.com/tg123/sshpiper/relayadmin"
 	"github.com/urfave/cli/v2"
@@ -36,6 +37,7 @@ func main() {
 			&cli.StringFlag{Name: "tls-key", Usage: "server private key (PEM); required unless --insecure", EnvVars: []string{"RELAY_ADMIN_TLS_KEY"}},
 			&cli.StringFlag{Name: "api-token-file", Usage: "file holding the bearer token required on every call", EnvVars: []string{"RELAY_ADMIN_TOKEN_FILE"}},
 			&cli.StringFlag{Name: "api-token", Usage: "bearer token (prefer --api-token-file)", EnvVars: []string{"RELAY_ADMIN_TOKEN"}},
+			&cli.StringFlag{Name: "audit-dir", Usage: "audit directory to browse read-only; enables the /v1/audit/* endpoints and the console's audit views", EnvVars: []string{"SSHPIPERD_AUDIT_DIR", "RELAY_ADMIN_AUDIT_DIR"}},
 			&cli.BoolFlag{Name: "insecure", Usage: "serve plain HTTP (only on a trusted local network)", EnvVars: []string{"RELAY_ADMIN_INSECURE"}},
 		},
 		Action: run,
@@ -63,6 +65,14 @@ func run(c *cli.Context) error {
 	defer db.Close()
 
 	srv := &server{svc: relayadmin.New(db)}
+	if dir := c.String("audit-dir"); dir != "" {
+		store, err := auditindex.Open(dir)
+		if err != nil {
+			return fmt.Errorf("cannot open audit dir: %w", err)
+		}
+		srv.audit = store
+		slog.Info("audit browsing enabled", "dir", dir)
+	}
 	handler := requireToken(token, srv.routes())
 
 	httpSrv := &http.Server{
@@ -126,11 +136,14 @@ func loadTLS(c *cli.Context) (*tls.Config, error) {
 	return &tls.Config{Certificates: []tls.Certificate{pair}, MinVersion: tls.VersionTLS12}, nil
 }
 
-// requireToken checks the bearer token on every request except /v1/healthz.
+// requireToken guards every /v1/* call with the bearer token. The health
+// check and the static console assets (any path not under /v1/) are open: the
+// assets are just HTML/JS and the console sends the token on its own API
+// calls.
 func requireToken(token string, next http.Handler) http.Handler {
 	want := []byte("Bearer " + token)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/v1/healthz" {
+		if !strings.HasPrefix(r.URL.Path, "/v1/") || r.URL.Path == "/v1/healthz" {
 			next.ServeHTTP(w, r)
 			return
 		}

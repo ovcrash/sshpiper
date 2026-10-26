@@ -5,12 +5,14 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/tg123/sshpiper/auditindex"
 	"github.com/tg123/sshpiper/registry"
 	"github.com/tg123/sshpiper/relayadmin"
 )
 
 type server struct {
-	svc *relayadmin.Service
+	svc   *relayadmin.Service
+	audit *auditindex.Store // nil when --audit-dir is unset
 }
 
 func (s *server) routes() http.Handler {
@@ -27,6 +29,12 @@ func (s *server) routes() http.Handler {
 	mux.HandleFunc("POST /v1/entries/{ip}/probe", s.probe)
 	mux.HandleFunc("POST /v1/entries/{ip}/expose", s.expose)
 	mux.HandleFunc("POST /v1/entries/{ip}/retire", s.retire)
+
+	// read-only audit browsing (enabled by --audit-dir)
+	mux.HandleFunc("GET /v1/audit/sessions", s.auditSessions)
+	mux.HandleFunc("GET /v1/audit/sessions/{day}/{id}", s.auditSession)
+	mux.HandleFunc("GET /v1/audit/sessions/{day}/{id}/cast/{channel}", s.auditCast)
+	mux.HandleFunc("GET /v1/audit/sessions/{day}/{id}/files/{sha}", s.auditFile)
 	return mux
 }
 
