@@ -110,12 +110,12 @@ func (s *Service) Expose(ctx context.Context, e *registry.Entry) error {
 	if p, err := s.db.Persona(ctx, e.ID); err != nil || !p.HasHostKeys() {
 		return fmt.Errorf("entry %d has no host keys", e.ID)
 	}
-	return s.db.SetState(ctx, e.ID, registry.StateExposed, "")
+	return s.moveTo(ctx, e, registry.StateExposed, "")
 }
 
 // Retire stops serving an entry.
 func (s *Service) Retire(ctx context.Context, e *registry.Entry) error {
-	return s.db.SetState(ctx, e.ID, registry.StateRetired, "")
+	return s.moveTo(ctx, e, registry.StateRetired, "")
 }
 
 // RunRetireHook runs a shell command after a retire, with EXTERNAL_IP and

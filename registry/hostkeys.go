@@ -25,9 +25,9 @@ const (
 
 // HostKeys are PEM OpenSSH private keys.
 type HostKeys struct {
-	ED25519 string
-	ECDSA   string
-	RSA     string
+	ED25519 string `json:"ed25519"`
+	ECDSA   string `json:"ecdsa"`
+	RSA     string `json:"rsa"`
 }
 
 // GenerateHostKeys creates the three host keys with the defaults of an
