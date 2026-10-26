@@ -24,6 +24,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 )
 
 // ErrNotFound is returned when a day, session, cast or file does not exist or
@@ -129,17 +130,72 @@ type SessionDetail struct {
 	Files  []FileInfo      `json:"files"`
 }
 
-// Sessions lists every recorded session, newest first. filterIP, when set,
-// keeps only sessions whose destination (external) IP matches it.
-func (s *Store) Sessions(filterIP string) ([]SessionSummary, error) {
+// DefaultSessionLimit bounds how many sessions Sessions returns when the
+// caller passes limit <= 0. A real sensor accumulates a large history, so the
+// list is always capped and newest-first.
+const DefaultSessionLimit = 200
+
+type dirRef struct {
+	day, name string
+	mod       time.Time
+}
+
+// Sessions returns one page of recorded sessions, newest first. The page is
+// limit items (or DefaultSessionLimit when limit <= 0) starting at offset.
+// filterIP, when set, keeps only sessions whose destination (external) IP
+// matches it. Directories are ranked by modification time (a cheap stat), so
+// only the event logs of the page (plus any skipped by offset/filter) are
+// read; a scan cap bounds the work so a filter that matches little does not
+// read the whole history. Paging is stable because the ordering key (mtime)
+// does not change as new sessions arrive at the front.
+func (s *Store) Sessions(filterIP string, limit, offset int) ([]SessionSummary, error) {
+	if limit <= 0 {
+		limit = DefaultSessionLimit
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	refs, err := s.collectDirs()
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(refs, func(i, j int) bool { return refs[i].mod.After(refs[j].mod) })
+
+	maxScan := max((offset+limit)*20, 2000)
+	matched := 0
+	out := []SessionSummary{}
+	for i, r := range refs {
+		if len(out) >= limit || i >= maxScan {
+			break
+		}
+		sum, err := s.summarize(r.day, r.name)
+		if err != nil {
+			continue
+		}
+		if filterIP != "" && sum.DstIP != filterIP {
+			continue
+		}
+		if matched < offset {
+			matched++
+			continue
+		}
+		out = append(out, sum)
+		matched++
+	}
+	return out, nil
+}
+
+// collectDirs lists every <day>/<session> directory with its modification
+// time, without reading any event log.
+func (s *Store) collectDirs() ([]dirRef, error) {
 	days, err := os.ReadDir(s.dir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return []SessionSummary{}, nil
+			return nil, nil
 		}
 		return nil, err
 	}
-	out := []SessionSummary{}
+	refs := []dirRef{}
 	for _, d := range days {
 		if !d.IsDir() || !dayRe.MatchString(d.Name()) {
 			continue
@@ -153,23 +209,14 @@ func (s *Store) Sessions(filterIP string) ([]SessionSummary, error) {
 			if !se.IsDir() || !idRe.MatchString(se.Name()) {
 				continue
 			}
-			sum, err := s.summarize(day, se.Name())
-			if err != nil {
-				continue
+			var mod time.Time
+			if info, err := se.Info(); err == nil {
+				mod = info.ModTime()
 			}
-			if filterIP != "" && sum.DstIP != filterIP {
-				continue
-			}
-			out = append(out, sum)
+			refs = append(refs, dirRef{day: day, name: se.Name(), mod: mod})
 		}
 	}
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].Start != out[j].Start {
-			return out[i].Start > out[j].Start // newest first
-		}
-		return out[i].ID > out[j].ID
-	})
-	return out, nil
+	return refs, nil
 }
 
 // Session returns the full detail of one session.
@@ -193,7 +240,7 @@ func (s *Store) Session(day, id string) (*SessionDetail, error) {
 	}
 	d.Casts = listCasts(dir)
 	d.Files = listFiles(dir, events)
-	d.SessionSummary.Channels = len(d.Casts)
+	d.Channels = len(d.Casts)
 	d.SessionSummary.Files = len(d.Files)
 	return d, nil
 }

@@ -6,9 +6,12 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
-// writeSession lays down a session directory the way the daemon would.
+// writeSession lays down a session directory the way the daemon would. It sets
+// the directory mtime to the day (Sessions orders by mtime, as on a live
+// sensor), so sessions on later days sort ahead of earlier ones.
 func writeSession(t *testing.T, root, day, id string, lines []string, casts map[string]string, files map[string]string) {
 	t.Helper()
 	dir := filepath.Join(root, day, id)
@@ -41,6 +44,10 @@ func writeSession(t *testing.T, root, day, id string, lines []string, casts map[
 		if err := os.WriteFile(filepath.Join(fdir, "tmp", "partial"), []byte("x"), 0o600); err != nil {
 			t.Fatal(err)
 		}
+	}
+	// Set the dir mtime to the day so mtime-based ordering matches the dates.
+	if d, err := time.Parse("2006-01-02", day); err == nil {
+		_ = os.Chtimes(dir, d, d)
 	}
 }
 
@@ -80,7 +87,7 @@ func seed(t *testing.T) *Store {
 
 func TestSessionsListAndFilter(t *testing.T) {
 	s := seed(t)
-	all, err := s.Sessions("")
+	all, err := s.Sessions("", 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,7 +99,7 @@ func TestSessionsListAndFilter(t *testing.T) {
 		t.Errorf("want newest first, got %s", all[0].Day)
 	}
 
-	only, err := s.Sessions("203.0.113.10")
+	only, err := s.Sessions("203.0.113.10", 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -178,12 +185,58 @@ func TestRejectsBadInput(t *testing.T) {
 	}
 }
 
+func TestSessionsLimit(t *testing.T) {
+	root := t.TempDir()
+	for i := range 6 {
+		id := "1111111" + string(rune('a'+i)) + "-1111-1111-1111-111111111111"
+		writeSession(t, root, "2026-02-01", id,
+			[]string{`{"eventid":"piper.session.connect","timestamp":"2026-02-01T10:0` + string(rune('0'+i)) + `:00.000000Z","dst_ip":"203.0.113.10"}`},
+			nil, nil)
+	}
+	s, err := Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Sessions("", 3, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 3 {
+		t.Errorf("limit 3: got %d sessions", len(got))
+	}
+	all, _ := s.Sessions("", 0, 0) // default cap >= 6, returns all
+	if len(all) != 6 {
+		t.Errorf("default: got %d sessions, want 6", len(all))
+	}
+
+	// pagination: two pages of 3 cover all 6, in order, without overlap.
+	p1, _ := s.Sessions("", 3, 0)
+	p2, _ := s.Sessions("", 3, 3)
+	if len(p1) != 3 || len(p2) != 3 {
+		t.Fatalf("pages: got %d and %d", len(p1), len(p2))
+	}
+	seen := map[string]bool{}
+	for _, x := range append(append([]SessionSummary{}, p1...), p2...) {
+		if seen[x.ID] {
+			t.Errorf("session %s appears on both pages", x.ID)
+		}
+		seen[x.ID] = true
+	}
+	if len(seen) != 6 {
+		t.Errorf("two pages cover %d sessions, want 6", len(seen))
+	}
+	// offset past the end returns empty, not an error.
+	if end, _ := s.Sessions("", 3, 99); len(end) != 0 {
+		t.Errorf("offset past end: got %d", len(end))
+	}
+}
+
 func TestEmptyDir(t *testing.T) {
 	s, err := Open(filepath.Join(t.TempDir(), "does-not-exist-yet"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := s.Sessions("")
+	got, err := s.Sessions("", 0, 0)
 	if err != nil || len(got) != 0 {
 		t.Errorf("empty store: got %v err %v", got, err)
 	}

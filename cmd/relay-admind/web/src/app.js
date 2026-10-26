@@ -339,10 +339,10 @@ function auditIPFilter() {
   return m ? decodeURIComponent(m[1]) : '';
 }
 
-async function renderAudit() {
-  const ip = auditIPFilter();
-  const list = await api('/v1/audit/sessions' + (ip ? '?ip=' + encodeURIComponent(ip) : ''));
-  const rows = list.map((s) => `
+const AUDIT_PAGE = 100;
+
+function auditRowHtml(s) {
+  return `
     <tr class="clickable" data-day="${escapeHtml(s.day)}" data-id="${escapeHtml(s.id)}">
       <td class="mono">${escapeHtml(fmtTime(s.start))}</td>
       <td><code>${escapeHtml(s.src_ip || '')}</code></td>
@@ -351,8 +351,11 @@ async function renderAudit() {
       <td>${s.commands || 0}</td>
       <td>${s.channels || 0}</td>
       <td>${s.files || 0}</td>
-    </tr>`).join('');
+    </tr>`;
+}
 
+async function renderAudit() {
+  const ip = auditIPFilter();
   view.innerHTML = `
     <div class="page-head">
       <h1><svg class="ic"><use href="#i-pulse"/></svg> Audit sessions${ip ? ` · <code>${escapeHtml(ip)}</code>` : ''}</h1>
@@ -361,14 +364,37 @@ async function renderAudit() {
     <section class="card">
       <div class="table-wrap">
         <table><thead><tr><th>started</th><th>source</th><th>external ip</th><th>logins</th><th>cmds</th><th>casts</th><th>files</th></tr></thead>
-        <tbody>${rows}</tbody></table>
-        ${list.length ? '' : '<div class="empty">No recorded sessions.</div>'}
+        <tbody id="audit-rows"></tbody></table>
+        <div class="empty" id="audit-empty" style="display:none">No recorded sessions.</div>
+      </div>
+      <div class="card-body" style="display:flex;justify-content:center">
+        <button class="btn" id="audit-more" style="display:none">Load more</button>
       </div>
     </section>`;
 
-  for (const tr of view.querySelectorAll('tr.clickable')) {
-    tr.addEventListener('click', () => { location.hash = '#/audit/' + tr.dataset.day + '/' + encodeURIComponent(tr.dataset.id); });
-  }
+  const tbody = $('audit-rows');
+  const emptyBox = $('audit-empty');
+  const moreBtn = $('audit-more');
+  let offset = 0;
+
+  const loadPage = async () => {
+    moreBtn.disabled = true;
+    const q = `/v1/audit/sessions?limit=${AUDIT_PAGE}&offset=${offset}` + (ip ? '&ip=' + encodeURIComponent(ip) : '');
+    const page = await api(q);
+    for (const s of page) {
+      tbody.insertAdjacentHTML('beforeend', auditRowHtml(s));
+      const tr = tbody.lastElementChild;
+      tr.addEventListener('click', () => { location.hash = '#/audit/' + tr.dataset.day + '/' + encodeURIComponent(tr.dataset.id); });
+    }
+    offset += page.length;
+    emptyBox.style.display = offset === 0 ? '' : 'none';
+    // a short page means we reached the end
+    moreBtn.style.display = page.length === AUDIT_PAGE ? '' : 'none';
+    moreBtn.disabled = false;
+  };
+
+  moreBtn.addEventListener('click', loadPage);
+  await loadPage();
 }
 
 // ---------- audit session detail ----------
