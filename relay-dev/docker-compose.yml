@@ -112,9 +112,11 @@ services:
     command:
       - --registry=/data/relay-registry.db
       - --address=0.0.0.0:8090
+      - --audit-dir=/audit
       - --insecure
     volumes:
       - proxy-registry:/data
+      - proxy-audit:/audit:ro
     networks:
       relaynet:
         ipv4_address: 10.99.0.3

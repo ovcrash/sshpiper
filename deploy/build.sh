@@ -20,7 +20,17 @@ echo "building the relay plugin…"
 echo "building registryctl (CLI)…"
 (cd "$repo" && go build -o "$dest/registryctl" ./cmd/registryctl)
 
-echo "building relay-admind (registration API)…"
+# The console UI bundle (cmd/relay-admind/web/dist) is committed, so relay-admind
+# builds without Node. Regenerate it only if a toolchain is present and you
+# changed the frontend sources.
+if command -v npm >/dev/null 2>&1; then
+	echo "rebuilding the console bundle (npm found)…"
+	(cd "$repo/cmd/relay-admind/web" && npm ci --silent && npm run build)
+else
+	echo "npm not found; using the committed console bundle"
+fi
+
+echo "building relay-admind (registration API + console)…"
 (cd "$repo" && go build -o "$dest/relay-admind" ./cmd/relay-admind)
 
 echo "done. binaries in $dest:"

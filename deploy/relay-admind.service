@@ -9,8 +9,11 @@
 #   sudo systemctl daemon-reload && sudo systemctl enable --now relay-admind
 #
 # Writes the same registry the proxy reads (SQLite WAL serializes writers), so
-# entries can be registered without restarting the proxy. Binds localhost by
-# default; expose only behind the operator's network or a reverse proxy.
+# entries can be registered without restarting the proxy. Also serves the
+# operator console (browser UI) at https://<RELAY_ADMIN_ADDRESS>/ and, when
+# SSHPIPERD_AUDIT_DIR is set in relay.env, read-only audit browsing. Binds
+# localhost by default; expose only behind the operator's network or a reverse
+# proxy.
 [Unit]
 Description=Relay registration API (relay-admind)
 After=network-online.target
