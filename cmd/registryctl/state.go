@@ -2,10 +2,8 @@ package main
 
 import (
 	"fmt"
-	"os"
-	"os/exec"
 
-	"github.com/tg123/sshpiper/registry"
+	"github.com/tg123/sshpiper/relayadmin"
 	"github.com/urfave/cli/v2"
 )
 
@@ -20,18 +18,11 @@ func exposeCommand() *cli.Command {
 				return err
 			}
 			defer db.Close()
-
 			e, err := findEntry(c, db)
 			if err != nil {
 				return err
 			}
-			if e.State != registry.StateReady {
-				return fmt.Errorf("entry %d is %s: only a ready entry can be exposed", e.ID, e.State)
-			}
-			if p, err := db.Persona(c.Context, e.ID); err != nil || !p.HasHostKeys() {
-				return fmt.Errorf("entry %d has no host keys", e.ID)
-			}
-			if err := db.SetState(c.Context, e.ID, registry.StateExposed, ""); err != nil {
+			if err := relayadmin.New(db).Expose(c.Context, e); err != nil {
 				return err
 			}
 			fmt.Printf("entry %d (%s) exposed\n", e.ID, e.ExternalIP)
@@ -55,29 +46,18 @@ func retireCommand() *cli.Command {
 				return err
 			}
 			defer db.Close()
-
 			e, err := findEntry(c, db)
 			if err != nil {
 				return err
 			}
-			if err := db.SetState(c.Context, e.ID, registry.StateRetired, ""); err != nil {
+			svc := relayadmin.New(db)
+			if err := svc.Retire(c.Context, e); err != nil {
 				return err
 			}
 			fmt.Printf("entry %d (%s) retired\n", e.ID, e.ExternalIP)
-
-			hook := c.String("hook-cmd")
-			if hook == "" {
-				return nil
-			}
-
-			cmd := exec.CommandContext(c.Context, "sh", "-c", hook)
-			cmd.Env = append(os.Environ(), "EXTERNAL_IP="+e.ExternalIP, fmt.Sprintf("ENTRY_ID=%d", e.ID))
-			cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
-			if err := cmd.Run(); err != nil {
-				_ = db.AddEvent(c.Context, e.ID, "retire_hook_failed", err.Error())
+			if err := svc.RunRetireHook(c.Context, e, c.String("hook-cmd")); err != nil {
 				return fmt.Errorf("entry %d is retired but the hook failed: %w", e.ID, err)
 			}
-			_ = db.AddEvent(c.Context, e.ID, "retire_hook", "ok")
 			return nil
 		},
 	}

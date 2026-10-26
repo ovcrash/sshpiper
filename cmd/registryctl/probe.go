@@ -1,18 +1,15 @@
 package main
 
 import (
-	"context"
-	"errors"
 	"fmt"
 	"net"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/tg123/sshpiper/registry"
+	"github.com/tg123/sshpiper/relayadmin"
 	"github.com/tg123/sshpiper/sshprobe"
 	"github.com/urfave/cli/v2"
-	"golang.org/x/crypto/ssh"
 )
 
 func probeCommand() *cli.Command {
@@ -26,6 +23,7 @@ func probeCommand() *cli.Command {
 				return err
 			}
 			defer db.Close()
+			svc := relayadmin.New(db)
 
 			var entries []*registry.Entry
 			if c.Bool("all") {
@@ -48,9 +46,17 @@ func probeCommand() *cli.Command {
 
 			failed := 0
 			for _, e := range entries {
-				if err := probeEntry(c.Context, db, e); err != nil {
+				res, err := svc.Probe(c.Context, e)
+				switch {
+				case err != nil:
 					failed++
 					fmt.Printf("entry %d (%s): %v\n", e.ID, e.ExternalIP, err)
+				case len(res.Problems) > 0:
+					failed++
+					fmt.Printf("entry %d (%s) not ready:\n    %s\n", e.ID, e.ExternalIP, strings.Join(res.Problems, "\n    "))
+				default:
+					fmt.Printf("entry %d (%s): %s, hassh_server %s, methods %s\n",
+						e.ID, e.ExternalIP, res.Version, res.HASSHServer, res.AuthMethods)
 				}
 			}
 			if failed > 0 {
@@ -59,122 +65,6 @@ func probeCommand() *cli.Command {
 			return nil
 		},
 	}
-}
-
-// moveTo changes state when the transition is allowed and the entry is not
-// already there.
-func moveTo(ctx context.Context, db *registry.DB, e *registry.Entry, to registry.State, detail string) error {
-	if e.State == to {
-		return nil
-	}
-	if err := db.SetState(ctx, e.ID, to, detail); err != nil {
-		return err
-	}
-	e.State = to
-	return nil
-}
-
-// probeEntry probes the backend of e. A first probe moves a draft entry to
-// ready; a probe of a ready or exposed entry detects drift and moves it back
-// (ready -> probing, exposed -> needs_check).
-func probeEntry(ctx context.Context, db *registry.DB, e *registry.Entry) error {
-	if e.State == registry.StateRetired {
-		return errors.New("retired")
-	}
-
-	p, err := db.Persona(ctx, e.ID)
-	if errors.Is(err, registry.ErrNotFound) || (err == nil && !p.HasHostKeys()) {
-		return errors.New("no host keys: run persona gen (then give them to the backend) or persona import first")
-	}
-	if err != nil {
-		return err
-	}
-	want, err := sshprobe.FromPersona(p)
-	if err != nil {
-		return err
-	}
-
-	// ready and exposed entries are re-probed in place to detect drift
-	if e.State == registry.StateDraft || e.State == registry.StateNeedsCheck {
-		if err := moveTo(ctx, db, e, registry.StateProbing, "probe started"); err != nil {
-			return err
-		}
-	}
-
-	problems := probeProblems(ctx, e, want)
-	snap, snapErr := sshprobe.Take(ctx, e.BackendHost, e.BackendPort, e.Username)
-
-	switch {
-	case snapErr != nil:
-		problems = append(problems, "probe: "+snapErr.Error())
-	default:
-		// the backend must present exactly the persona's host keys
-		for _, d := range sshprobe.Diff(&sshprobe.Snapshot{HostKeys: want.HostKeys}, &sshprobe.Snapshot{HostKeys: snap.HostKeys}) {
-			if strings.HasPrefix(d.Field, "host key ") {
-				problems = append(problems, fmt.Sprintf("%s: persona %s, backend %s", d.Field, d.Want, d.Got))
-			}
-		}
-	}
-
-	if len(problems) > 0 {
-		switch e.State {
-		case registry.StateExposed:
-			_ = moveTo(ctx, db, e, registry.StateNeedsCheck, strings.Join(problems, "; "))
-		case registry.StateReady:
-			_ = moveTo(ctx, db, e, registry.StateProbing, strings.Join(problems, "; "))
-		}
-		return errors.New(strings.Join(problems, "\n    "))
-	}
-
-	p.SSHVersion = snap.Version
-	p.Kex = snap.Kex
-	p.HostKeyAlgs = snap.HostKeyAlgs
-	p.Ciphers = snap.Ciphers
-	p.MACs = snap.MACs
-	p.Compression = snap.Compression
-	p.AuthMethods = strings.Join(snap.AuthMethods, ",")
-	p.HASSHServer = snap.HASSHServer
-	p.ProbedAt = time.Now().UTC().Format(time.RFC3339)
-	snap.HostKeys = want.HostKeys
-	p.ProbeHash = snap.Hash()
-
-	changed := p.ProbeHash != want.Hash()
-	if err := db.SetPersona(ctx, *p, "probed", fmt.Sprintf("hassh_server=%s changed=%t", p.HASSHServer, changed)); err != nil {
-		return err
-	}
-	if err := moveTo(ctx, db, e, registry.StateReady, "probe ok"); err != nil {
-		return err
-	}
-
-	fmt.Printf("entry %d (%s): backend %s, %s, hassh_server %s, methods %s\n",
-		e.ID, e.ExternalIP, e.BackendHost, p.SSHVersion, p.HASSHServer, p.AuthMethods)
-	return nil
-}
-
-// probeProblems checks that the entry's credential works on the backend.
-func probeProblems(ctx context.Context, e *registry.Entry, want *sshprobe.Snapshot) []string {
-	addr := net.JoinHostPort(e.BackendHost, strconv.Itoa(e.BackendPort))
-
-	var pinned []ssh.PublicKey
-	for _, k := range want.HostKeys {
-		pinned = append(pinned, k)
-	}
-
-	var problems []string
-	if e.AuthPassword {
-		if err := sshprobe.Login(ctx, addr, e.Username, ssh.Password(e.Password), pinned); err != nil {
-			problems = append(problems, "password login: "+err.Error())
-		}
-	}
-	if e.AuthKey {
-		signer, err := ssh.ParsePrivateKey([]byte(e.PrivateKey))
-		if err != nil {
-			problems = append(problems, "private key: "+err.Error())
-		} else if err := sshprobe.Login(ctx, addr, e.Username, ssh.PublicKeys(signer), pinned); err != nil {
-			problems = append(problems, "key login: "+err.Error())
-		}
-	}
-	return problems
 }
 
 func verifyFrontCommand() *cli.Command {

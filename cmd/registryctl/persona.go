@@ -1,10 +1,10 @@
 package main
 
 import (
-	"errors"
 	"fmt"
 
 	"github.com/tg123/sshpiper/registry"
+	"github.com/tg123/sshpiper/relayadmin"
 	"github.com/urfave/cli/v2"
 )
 
@@ -23,28 +23,11 @@ func personaCommand() *cli.Command {
 						return err
 					}
 					defer db.Close()
-
 					e, err := findEntry(c, db)
 					if err != nil {
 						return err
 					}
-					p, err := loadOrNewPersona(c, db, e.ID)
-					if err != nil {
-						return err
-					}
-					if p.HasHostKeys() && !c.Bool("force") {
-						return fmt.Errorf("entry %d already has host keys (use --force to replace them)", e.ID)
-					}
-					if e.State == registry.StateExposed {
-						return errors.New("refusing to change host keys of an exposed entry: retire it first")
-					}
-
-					hk, err := registry.GenerateHostKeys()
-					if err != nil {
-						return err
-					}
-					p.SetHostKeys(*hk)
-					if err := db.SetPersona(c.Context, *p, "persona_generated", "host keys generated"); err != nil {
+					if err := relayadmin.New(db).GenPersona(c.Context, e, c.Bool("force")); err != nil {
 						return err
 					}
 					fmt.Printf("host keys generated for entry %d\n", e.ID)
@@ -61,16 +44,15 @@ func personaCommand() *cli.Command {
 						return err
 					}
 					defer db.Close()
-
 					e, err := findEntry(c, db)
 					if err != nil {
 						return err
 					}
-					p, err := db.Persona(c.Context, e.ID)
-					if err != nil || !p.HasHostKeys() {
-						return fmt.Errorf("entry %d has no host keys: run persona gen or persona import", e.ID)
+					hk, err := relayadmin.New(db).ExportKeys(c.Context, e.ID)
+					if err != nil {
+						return err
 					}
-					if err := registry.ExportHostKeys(c.String("dir"), p.HostKeys()); err != nil {
+					if err := registry.ExportHostKeys(c.String("dir"), hk); err != nil {
 						return err
 					}
 					fmt.Printf("host keys written to %s\n", c.String("dir"))
@@ -87,24 +69,15 @@ func personaCommand() *cli.Command {
 						return err
 					}
 					defer db.Close()
-
 					e, err := findEntry(c, db)
 					if err != nil {
 						return err
-					}
-					if e.State == registry.StateExposed {
-						return errors.New("refusing to change host keys of an exposed entry: retire it first")
 					}
 					hk, err := registry.ImportHostKeys(c.String("from"))
 					if err != nil {
 						return err
 					}
-					p, err := loadOrNewPersona(c, db, e.ID)
-					if err != nil {
-						return err
-					}
-					p.SetHostKeys(*hk)
-					if err := db.SetPersona(c.Context, *p, "persona_generated", "host keys imported"); err != nil {
+					if err := relayadmin.New(db).ImportPersonaKeys(c.Context, e, *hk); err != nil {
 						return err
 					}
 					fmt.Printf("host keys imported for entry %d\n", e.ID)
@@ -113,12 +86,4 @@ func personaCommand() *cli.Command {
 			},
 		},
 	}
-}
-
-func loadOrNewPersona(c *cli.Context, db *registry.DB, entryID int64) (*registry.Persona, error) {
-	p, err := db.Persona(c.Context, entryID)
-	if errors.Is(err, registry.ErrNotFound) {
-		return &registry.Persona{EntryID: entryID}, nil
-	}
-	return p, err
 }
