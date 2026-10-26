@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>relay console</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="dist/app.css">
+</head>
+<body>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="i-logo" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M4 7l5 5-5 5"/><line x1="12" y1="19" x2="20" y2="19"/>
+    </symbol>
+    <symbol id="i-server" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="3" y="4" width="18" height="6" rx="1.5"/><rect x="3" y="14" width="18" height="6" rx="1.5"/>
+      <circle cx="7" cy="7" r="0.6" fill="currentColor"/><circle cx="7" cy="17" r="0.6" fill="currentColor"/>
+    </symbol>
+    <symbol id="i-pulse" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M3 12h4l2-6 4 12 2-6h6"/>
+    </symbol>
+    <symbol id="i-shield" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M12 3l8 3v5c0 5-3.5 8-8 10-4.5-2-8-5-8-10V6l8-3z"/>
+    </symbol>
+    <symbol id="i-key" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="8" cy="15" r="4"/><path d="M10.8 12.2 20 3"/><path d="M16 7l3 3"/>
+    </symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M21 12a9 9 0 1 1-3-6.7"/><polyline points="21 4 21 10 15 10"/>
+    </symbol>
+    <symbol id="i-search" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16" y2="16"/>
+    </symbol>
+    <symbol id="i-play" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M7 5l12 7-12 7z" fill="currentColor" stroke="none"/>
+    </symbol>
+    <symbol id="i-download" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M12 3v12"/><polyline points="7 10 12 15 17 10"/><path d="M5 21h14"/>
+    </symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+    </symbol>
+    <symbol id="i-x" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <line x1="6" y1="6" x2="18" y2="18"/><line x1="18" y1="6" x2="6" y2="18"/>
+    </symbol>
+    <symbol id="i-back" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/>
+    </symbol>
+  </defs>
+</svg>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark"><svg class="ic"><use href="#i-logo"/></svg></span>
+    <div class="brand-text">
+      <div class="brand-title">relay</div>
+      <div class="brand-sub">console</div>
+    </div>
+  </div>
+  <nav class="nav" id="nav">
+    <a href="#/entries" data-route="entries"><svg class="ic"><use href="#i-server"/></svg><span>Entries</span></a>
+    <a href="#/audit" data-route="audit"><svg class="ic"><use href="#i-pulse"/></svg><span>Audit</span></a>
+  </nav>
+  <div class="topbar-actions">
+    <span class="chip" id="meta">…</span>
+    <button id="refresh" class="btn btn-ghost" type="button" title="Refresh">
+      <svg class="ic"><use href="#i-refresh"/></svg><span>refresh</span>
+    </button>
+    <button id="signout" class="btn btn-ghost" type="button" title="Forget the API token">
+      <svg class="ic"><use href="#i-key"/></svg><span>sign out</span>
+    </button>
+  </div>
+</header>
+
+<main class="page" id="view"></main>
+
+<dialog id="login" aria-labelledby="login-title">
+  <form method="dialog" class="login-panel" id="login-form">
+    <h2 id="login-title"><svg class="ic"><use href="#i-shield"/></svg> API token required</h2>
+    <p class="card-sub">Paste the bearer token relay-admind was started with. It is kept only in this tab's session storage.</p>
+    <input type="password" id="login-token" placeholder="API token" autocomplete="off" autofocus>
+    <div class="login-actions">
+      <button class="btn btn-primary" type="submit">Connect</button>
+    </div>
+    <div class="errors" id="login-error"></div>
+  </form>
+</dialog>
+
+<dialog id="viewer" aria-labelledby="viewer-title">
+  <div class="panel">
+    <header class="viewer-header">
+      <span class="viewer-dots"><i></i><i></i><i></i></span>
+      <strong id="viewer-title">recording</strong>
+      <a id="viewer-download" class="btn btn-ghost" download title="Download .cast">
+        <svg class="ic"><use href="#i-download"/></svg><span>.cast</span>
+      </a>
+      <button id="viewer-close" class="btn btn-ghost" type="button" aria-label="close">
+        <svg class="ic"><use href="#i-x"/></svg>
+      </button>
+    </header>
+    <div id="viewer-output"></div>
+  </div>
+</dialog>
+
+<div id="toasts" aria-live="polite" aria-atomic="false"></div>
+
+<script src="dist/app.js"></script>
+</body>
+</html>

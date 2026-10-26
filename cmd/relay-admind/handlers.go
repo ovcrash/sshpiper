@@ -11,8 +11,9 @@ import (
 )
 
 type server struct {
-	svc   *relayadmin.Service
-	audit *auditindex.Store // nil when --audit-dir is unset
+	svc     *relayadmin.Service
+	audit   *auditindex.Store // nil when --audit-dir is unset
+	webPath string            // --web-static-path: "" embedded, "disable", or a dir
 }
 
 func (s *server) routes() http.Handler {
@@ -35,6 +36,9 @@ func (s *server) routes() http.Handler {
 	mux.HandleFunc("GET /v1/audit/sessions/{day}/{id}", s.auditSession)
 	mux.HandleFunc("GET /v1/audit/sessions/{day}/{id}/cast/{channel}", s.auditCast)
 	mux.HandleFunc("GET /v1/audit/sessions/{day}/{id}/files/{sha}", s.auditFile)
+
+	// console UI (catch-all; the /v1/* patterns above take precedence)
+	mux.Handle("/", staticHandler(s.webPath))
 	return mux
 }
 

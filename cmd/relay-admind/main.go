@@ -38,6 +38,7 @@ func main() {
 			&cli.StringFlag{Name: "api-token-file", Usage: "file holding the bearer token required on every call", EnvVars: []string{"RELAY_ADMIN_TOKEN_FILE"}},
 			&cli.StringFlag{Name: "api-token", Usage: "bearer token (prefer --api-token-file)", EnvVars: []string{"RELAY_ADMIN_TOKEN"}},
 			&cli.StringFlag{Name: "audit-dir", Usage: "audit directory to browse read-only; enables the /v1/audit/* endpoints and the console's audit views", EnvVars: []string{"SSHPIPERD_AUDIT_DIR", "RELAY_ADMIN_AUDIT_DIR"}},
+			&cli.StringFlag{Name: "web-static-path", Usage: "console UI source: empty = embedded (default), 'disable' = API only, or a directory on disk", EnvVars: []string{"RELAY_ADMIN_WEB_STATIC_PATH"}},
 			&cli.BoolFlag{Name: "insecure", Usage: "serve plain HTTP (only on a trusted local network)", EnvVars: []string{"RELAY_ADMIN_INSECURE"}},
 		},
 		Action: run,
@@ -64,7 +65,7 @@ func run(c *cli.Context) error {
 	}
 	defer db.Close()
 
-	srv := &server{svc: relayadmin.New(db)}
+	srv := &server{svc: relayadmin.New(db), webPath: c.String("web-static-path")}
 	if dir := c.String("audit-dir"); dir != "" {
 		store, err := auditindex.Open(dir)
 		if err != nil {

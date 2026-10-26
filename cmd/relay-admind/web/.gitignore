@@ -1,0 +1,3 @@
+node_modules/
+# dist/ is committed on purpose so `go build` works from a fresh clone
+# without a Node toolchain. Regenerate it with `npm ci && npm run build`.
