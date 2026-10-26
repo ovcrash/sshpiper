@@ -1,0 +1,59 @@
+Relay proxy — deployment on an Ubuntu server
+=============================================
+
+This is the production deploy path. relay-dev/ is a Docker dev bench, not for
+production. Go 1.27, no CGO. Every flag has an SSHPIPERD_* / RELAY_* env var;
+the files in this directory document them.
+
+Files
+-----
+  build.sh            build the four binaries into /usr/local/bin
+  relay.env.example   environment template -> /etc/relay/relay.env
+  run-proxy.sh        launch the proxy (reads relay.env, adds external IPs)
+  relay-proxy.service systemd unit for the proxy
+  relay-admind.service systemd unit for the registration API
+  register-entry.sh   register one entry (add -> persona -> probe -> expose)
+
+Quick start
+-----------
+1. Build and install the binaries:
+     sudo ./deploy/build.sh
+
+2. Free port 22 for the proxy: the relay answers on every external IP of the
+   host on SSHPIPERD_PORT (default 22), so move the host's administration sshd
+   to another port or another address first. Example: set "Port 2222" in
+   /etc/ssh/sshd_config and "sudo systemctl restart ssh".
+
+3. Configure:
+     sudo mkdir -p /etc/relay /var/lib/relay
+     sudo cp deploy/relay.env.example /etc/relay/relay.env
+     sudoedit /etc/relay/relay.env        # set RELAY_EXTERNAL_IPS, ports, paths
+     sudo useradd --system --no-create-home relay 2>/dev/null || true
+     sudo chown -R relay:relay /var/lib/relay
+
+4. Run the proxy (choose one):
+     # directly, for a first test:
+     sudo RELAY_ENV=/etc/relay/relay.env ./deploy/run-proxy.sh
+     # or as a service:
+     sudo install -m755 deploy/run-proxy.sh /usr/local/bin/relay-run-proxy
+     sudo cp deploy/relay-proxy.service /etc/systemd/system/
+     sudo systemctl daemon-reload && sudo systemctl enable --now relay-proxy
+
+5. Register an entry (the backend VM must already exist):
+     sudo RELAY_ENV=/etc/relay/relay.env ./deploy/register-entry.sh \
+       --ip 203.0.113.10 --user alice --backend 10.0.0.21 --password-file pw.txt
+   It generates host keys, prints where to install them on the VM, then probes
+   and exposes. Removing an entry: "registryctl retire --ip <ip>".
+
+   The registry can also be filled over HTTPS by the relay-admind service
+   (see relay-admind.service); both ways need no proxy restart.
+
+Notes
+-----
+- External IPs: one per entry, each assigned to the host NIC (run-proxy.sh
+  adds the ones listed in RELAY_EXTERNAL_IPS).
+- Secrets (passwords, private keys) live in the registry in clear text; it is
+  mode 0600. Protect /var/lib/relay and its backups.
+- The audit is written under SSHPIPERD_AUDIT_DIR (events.jsonl, asciicast,
+  file copies), dirs 0700, files 0600. Retention is 90 days by default.
+- On SIGTERM the proxy stops accepting and flushes the audit before exiting.

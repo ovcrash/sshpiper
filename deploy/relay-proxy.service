@@ -1,0 +1,36 @@
+# systemd unit for the relay proxy. Install:
+#   sudo cp deploy/relay-proxy.service /etc/systemd/system/
+#   sudo cp deploy/relay.env.example /etc/relay/relay.env   # then edit
+#   sudo install -m755 deploy/run-proxy.sh /usr/local/bin/relay-run-proxy
+#   sudo systemctl daemon-reload && sudo systemctl enable --now relay-proxy
+#
+# Runs as a dedicated 'relay' user. The host's own administration sshd must
+# not use the same port (default 22): move it first.
+[Unit]
+Description=Relay SSH proxy (sshpiperd + relay plugin)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=relay
+Group=relay
+EnvironmentFile=/etc/relay/relay.env
+Environment=RELAY_BIN_DIR=/usr/local/bin
+ExecStart=/usr/local/bin/relay-run-proxy
+Restart=on-failure
+RestartSec=2
+# add addresses + bind :22 without full root
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+StateDirectory=relay
+ReadWritePaths=/var/lib/relay
+# SIGTERM makes sshpiperd stop accepting and flush the audit before exit
+KillSignal=SIGTERM
+TimeoutStopSec=40
+
+[Install]
+WantedBy=multi-user.target

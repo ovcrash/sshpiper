@@ -1,0 +1,39 @@
+# systemd unit for the registration API (relay-admind). Install:
+#   sudo cp deploy/relay-admind.service /etc/systemd/system/
+#   # /etc/relay/relay.env holds RELAY_ADMIN_* (see relay.env.example)
+#   # create the TLS cert/key and the token file it points to:
+#   sudo openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
+#       -keyout /etc/relay/admind.key -out /etc/relay/admind.crt -subj /CN=relay-admind
+#   sudo sh -c 'head -c32 /dev/urandom | base64 > /etc/relay/admind.token'
+#   sudo chown relay:relay /etc/relay/admind.* && sudo chmod 600 /etc/relay/admind.key /etc/relay/admind.token
+#   sudo systemctl daemon-reload && sudo systemctl enable --now relay-admind
+#
+# Writes the same registry the proxy reads (SQLite WAL serializes writers), so
+# entries can be registered without restarting the proxy. Binds localhost by
+# default; expose only behind the operator's network or a reverse proxy.
+[Unit]
+Description=Relay registration API (relay-admind)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=relay
+Group=relay
+EnvironmentFile=/etc/relay/relay.env
+ExecStart=/usr/local/bin/relay-admind \
+  --registry ${SSHPIPERD_REGISTRY} \
+  --address ${RELAY_ADMIN_ADDRESS} \
+  --tls-cert ${RELAY_ADMIN_TLS_CERT} \
+  --tls-key ${RELAY_ADMIN_TLS_KEY} \
+  --api-token-file ${RELAY_ADMIN_TOKEN_FILE}
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+StateDirectory=relay
+ReadWritePaths=/var/lib/relay
+
+[Install]
+WantedBy=multi-user.target
