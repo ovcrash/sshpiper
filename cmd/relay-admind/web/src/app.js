@@ -208,9 +208,10 @@ function openAddEntry() {
         <div class="field"><label>Username</label><input type="text" name="username" placeholder="alice" required></div>
         <div class="field"><label>Backend host</label><input type="text" name="backend_host" placeholder="10.0.0.21" required></div>
         <div class="field"><label>Backend port</label><input type="number" name="backend_port" value="22" min="1" max="65535"></div>
+        <div class="field span2"><label>Backend authentication — how the proxy logs into the backend. Use a password, or a key pair (both parts).</label></div>
         <div class="field span2"><label>Password (leave empty to use a key)</label><input type="password" name="password" autocomplete="new-password"></div>
-        <div class="field span2"><label>Private key (PEM, optional)</label><textarea name="private_key" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"></textarea></div>
-        <div class="field span2"><label>Public key (optional)</label><textarea name="public_key" placeholder="ssh-ed25519 AAAA..."></textarea></div>
+        <div class="field span2"><label>Private key (PEM, with the public key below)</label><textarea name="private_key" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"></textarea></div>
+        <div class="field span2"><label>Public key (with the private key above)</label><textarea name="public_key" placeholder="ssh-ed25519 AAAA..."></textarea></div>
       </div>
       <div class="errors"></div>
       <div class="dialog-actions">
@@ -234,6 +235,14 @@ function openAddEntry() {
       private_key: fd.get('private_key') || '',
       public_key: fd.get('public_key') || '',
     };
+    if ((body.private_key && !body.public_key) || (!body.private_key && body.public_key)) {
+      errBox.textContent = 'Key authentication needs both the private and the public key.';
+      return;
+    }
+    if (!body.password && !body.private_key) {
+      errBox.textContent = 'Provide a password or a key pair for backend authentication.';
+      return;
+    }
     try {
       await api('/v1/entries', { method: 'POST', body: JSON.stringify(body) });
       showToast('Entry ' + body.external_ip + ' created', 'success');
@@ -268,26 +277,34 @@ async function renderEntry(ip) {
           <dt>external ip</dt><dd><code>${escapeHtml(e.external_ip)}</code></dd>
           <dt>username</dt><dd>${escapeHtml(e.username)}</dd>
           <dt>backend</dt><dd><code>${escapeHtml(e.backend_host)}:${e.backend_port || 22}</code></dd>
-          <dt>auth</dt><dd>${e.auth_password ? 'password ' : ''}${e.auth_key ? 'key' : ''}${(!e.auth_password && !e.auth_key) ? '—' : ''}</dd>
+          <dt title="how the proxy logs into the backend">backend auth</dt><dd>${e.auth_password ? 'password ' : ''}${e.auth_key ? 'key' : ''}${(!e.auth_password && !e.auth_key) ? '—' : ''}</dd>
           <dt>state</dt><dd>${statePill(e.state)}</dd>
           <dt>created</dt><dd class="mono">${escapeHtml(fmtTime(e.created_at))}</dd>
           <dt>updated</dt><dd class="mono">${escapeHtml(fmtTime(e.updated_at))}</dd>
           ${e.retired_at ? `<dt>retired</dt><dd class="mono">${escapeHtml(fmtTime(e.retired_at))}</dd>` : ''}
         </dl></div>
       </section>
-      <section class="card"><div class="card-head"><h2><svg class="ic"><use href="#i-key"/></svg> Persona</h2></div>
-        <div class="card-body"><dl class="kv">
+      <section class="card"><div class="card-head"><h2><svg class="ic"><use href="#i-key"/></svg> Persona (host keys)</h2></div>
+        <div class="card-body">
+          <p class="card-sub" style="margin-bottom:0.8rem">Host keys the proxy presents to clients. They must match the backend VM's <code>/etc/ssh/ssh_host_*</code>: generate here then install them on the VM, or import the VM's existing keys.</p>
+          <dl class="kv">
           <dt>host keys</dt><dd>${p.has_host_keys ? 'present' : '<span class="pill gray">none</span>'}</dd>
           <dt>ssh version</dt><dd class="mono">${escapeHtml(p.ssh_version || '—')}</dd>
           <dt>HASSH</dt><dd class="mono">${escapeHtml(p.hassh_server || '—')}</dd>
           <dt>auth methods</dt><dd class="mono">${escapeHtml(p.auth_methods || '—')}</dd>
           <dt>probed</dt><dd class="mono">${escapeHtml(fmtTime(p.probed_at) || '—')}</dd>
-        </dl></div>
+          </dl>
+          <div class="actions-row" style="margin-top:0.8rem">
+            <button class="btn" data-act="download-keys" ${p.has_host_keys ? '' : 'disabled title="no host keys yet"'}><svg class="ic"><use href="#i-download"/></svg><span>Download keys</span></button>
+            <button class="btn" data-act="import-keys" ${exposed ? 'disabled title="retire first"' : ''}>Import keys</button>
+          </div>
+        </div>
       </section>
     </div>
     <section class="card">
       <div class="card-head"><h2><svg class="ic"><use href="#i-shield"/></svg> Actions</h2></div>
       <div class="card-body actions-row">
+        ${retired ? '<button class="btn btn-primary" data-act="reactivate">Reactivate</button>' : ''}
         <button class="btn" data-act="generate" ${exposed || retired ? 'disabled title="not while exposed/retired"' : ''}>Generate host keys</button>
         <button class="btn" data-act="probe" ${retired ? 'disabled' : ''}>Probe backend</button>
         <button class="btn btn-primary" data-act="expose" ${exposed || retired ? 'disabled' : ''}>Expose</button>
@@ -311,9 +328,19 @@ async function renderEntry(ip) {
 async function entryAction(e, act) {
   const ip = e.external_ip;
   try {
-    if (act === 'generate') {
+    if (act === 'download-keys') {
+      await downloadHostKeys(ip);
+      return; // nothing changed; no re-render
+    } else if (act === 'import-keys') {
+      openImportKeys(ip);
+      return;
+    } else if (act === 'reactivate') {
+      await api('/v1/entries/' + encodeURIComponent(ip) + '/reactivate', { method: 'POST' });
+      showToast('Entry reactivated — probe and expose it again', 'success');
+    } else if (act === 'generate') {
       await api('/v1/entries/' + encodeURIComponent(ip) + '/persona/generate', { method: 'POST', body: '{}' });
-      showToast('Host keys generated', 'success');
+      showToast('Host keys generated — install them on the backend VM', 'success');
+      await downloadHostKeys(ip); // surface the keys so they can be installed
     } else if (act === 'probe') {
       const res = await api('/v1/entries/' + encodeURIComponent(ip) + '/probe', { method: 'POST' });
       const problems = (res && res.Problems) || (res && res.problems) || [];
@@ -330,6 +357,68 @@ async function entryAction(e, act) {
   } catch (err) {
     showToast(err.message, 'error');
   }
+}
+
+// downloadHostKeys fetches the persona private host keys and saves them as the
+// three files to drop into the backend VM's /etc/ssh/.
+async function downloadHostKeys(ip) {
+  const hk = await api('/v1/entries/' + encodeURIComponent(ip) + '/persona/keys');
+  const files = [
+    ['ssh_host_ed25519_key', hk.ed25519],
+    ['ssh_host_ecdsa_key', hk.ecdsa],
+    ['ssh_host_rsa_key', hk.rsa],
+  ];
+  let n = 0;
+  for (const [name, content] of files) {
+    if (!content) continue;
+    const blob = new Blob([content], { type: 'application/x-pem-file' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = name;
+    document.body.appendChild(a); a.click();
+    setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 0);
+    n++;
+  }
+  showToast(n ? `Downloaded ${n} host key file(s)` : 'No host keys to download', n ? 'success' : 'info');
+}
+
+// openImportKeys lets the operator paste host keys taken from the VM.
+function openImportKeys(ip) {
+  const dlg = document.createElement('dialog');
+  dlg.className = 'form-dialog';
+  dlg.innerHTML = `
+    <form method="dialog">
+      <h2>Import host keys</h2>
+      <p class="card-sub" style="margin-bottom:0.8rem">Paste all three of the backend VM's private host keys (from <code>/etc/ssh/ssh_host_*_key</code>): ed25519, ecdsa (P-256) and rsa.</p>
+      <div class="field"><label>ed25519 (ssh_host_ed25519_key)</label><textarea name="ed25519" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"></textarea></div>
+      <div class="field"><label>ecdsa (ssh_host_ecdsa_key)</label><textarea name="ecdsa"></textarea></div>
+      <div class="field"><label>rsa (ssh_host_rsa_key)</label><textarea name="rsa"></textarea></div>
+      <div class="errors"></div>
+      <div class="dialog-actions">
+        <button class="btn btn-ghost" value="cancel" type="submit" formnovalidate>Cancel</button>
+        <button class="btn btn-primary" value="ok" type="submit">Import</button>
+      </div>
+    </form>`;
+  document.body.appendChild(dlg);
+  const form = dlg.querySelector('form');
+  const errBox = dlg.querySelector('.errors');
+  form.addEventListener('submit', async (ev) => {
+    if (ev.submitter && ev.submitter.value === 'cancel') { dlg.close(); return; }
+    ev.preventDefault();
+    const fd = new FormData(form);
+    const body = { ed25519: fd.get('ed25519') || '', ecdsa: fd.get('ecdsa') || '', rsa: fd.get('rsa') || '' };
+    if (!body.ed25519 || !body.ecdsa || !body.rsa) { errBox.textContent = 'All three host keys are required (ed25519, ecdsa, rsa).'; return; }
+    try {
+      await api('/v1/entries/' + encodeURIComponent(ip) + '/persona/import', { method: 'POST', body: JSON.stringify(body) });
+      showToast('Host keys imported', 'success');
+      dlg.close();
+      renderEntry(ip);
+    } catch (err) {
+      errBox.textContent = err.message;
+    }
+  });
+  dlg.addEventListener('close', () => dlg.remove());
+  try { dlg.showModal(); } catch (e) { dlg.setAttribute('open', ''); }
 }
 
 // ---------- audit list ----------
