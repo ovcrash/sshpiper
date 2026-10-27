@@ -84,6 +84,17 @@ code="$(head -1 <<<"$(api POST /v1/entries/$IP/retire '{}')")"
 out="$(compose exec -T tester ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -o BatchMode=yes "x@$IP" true 2>&1 | tr -d '\r')"
 grep -qiE "closed|reset|refused|kex_exchange" <<<"$out" && pass "retired address closes: $out" || fail "retired address answered: $out"
 
+echo "== reactivate a retired entry, then reuse the address for a new one"
+out="$(api POST /v1/entries/$IP/reactivate)"
+if [ "$(head -1 <<<"$out")" = "200" ] && grep -q '"state":"draft"' <<<"$(tail -n +2 <<<"$out")"; then
+	pass "reactivate -> draft"
+else
+	fail "reactivate -> $(head -1 <<<"$out"): $(tail -n +2 <<<"$out")"
+fi
+api POST /v1/entries/$IP/retire '{}' >/dev/null   # free the address again
+out="$(api POST /v1/entries "{\"external_ip\":\"$IP\",\"username\":\"$u3\",\"backend_host\":\"10.99.0.23\",\"password\":\"$p3\"}")"
+[ "$(head -1 <<<"$out")" = "201" ] && pass "reuse retired IP -> 201" || fail "reuse IP -> $(head -1 <<<"$out"): $(tail -n +2 <<<"$out")"
+
 if [ "$failures" -ne 0 ]; then
 	echo "$failures check(s) failed"
 	exit 1
