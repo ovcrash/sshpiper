@@ -83,10 +83,16 @@ func newFixture(t *testing.T) *fixture {
 	if err != nil {
 		t.Fatal(err)
 	}
+	ed, ec, rsa := authKeys(t, hk)
 	for _, e := range []*registry.Entry{pw, ke} {
-		p := registry.Persona{EntryID: e.ID, AuthMethods: "publickey,password"}
+		// the backend's captured public host keys (the pin, per account)
+		if err := rw.SetBackendHostKeys(ctx, e.ID, ed, ec, rsa); err != nil {
+			t.Fatal(err)
+		}
+		// the site persona presented on the IP (shared, with the offered methods)
+		p := registry.Persona{AuthMethods: "publickey,password"}
 		p.SetHostKeys(*hk)
-		if err := rw.SetPersona(ctx, p, "persona_generated", ""); err != nil {
+		if err := rw.SetSitePersona(ctx, e.ExternalIP, p); err != nil {
 			t.Fatal(err)
 		}
 		for _, s := range []registry.State{registry.StateProbing, registry.StateReady, registry.StateExposed} {
@@ -98,30 +104,45 @@ func newFixture(t *testing.T) *fixture {
 	return &fixture{r: newRouter(ro), rw: rw, pwEntry: pw, keyEntry: ke, keyPub: pub, hostKeys: hk}
 }
 
+// authKeys returns the authorized-key public lines of host key set hk, as the
+// backend would present them (captured at probe).
+func authKeys(t *testing.T, hk *registry.HostKeys) (ed, ec, rsa string) {
+	t.Helper()
+	conv := func(priv string) string {
+		s, err := ssh.ParsePrivateKey([]byte(priv))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return strings.TrimSpace(string(ssh.MarshalAuthorizedKey(s.PublicKey())))
+	}
+	return conv(hk.ED25519), conv(hk.ECDSA), conv(hk.RSA)
+}
+
 func TestPasswordForwardedAsTyped(t *testing.T) {
 	f := newFixture(t)
 
-	// the typed user name is forwarded, even if it differs from the entry's
-	for _, user := range []string{"alice", "root", "nosuchuser"} {
-		u, err := f.r.password(connTo(user, "192.0.2.10:22"), []byte("whatever-was-typed"))
-		if err != nil {
-			t.Fatalf("user %q: %v", user, err)
-		}
-		if u.UserName != user {
-			t.Errorf("UserName = %q, want %q", u.UserName, user)
-		}
-		if u.Uri != "tcp://10.0.0.21:22" {
-			t.Errorf("Uri = %q", u.Uri)
-		}
-		if got := u.GetPassword().GetPassword(); got != "whatever-was-typed" {
-			t.Errorf("password = %q", got)
-		}
+	// the account's user authenticates; the typed password is forwarded as-is
+	u, err := f.r.password(connTo("alice", "192.0.2.10:22"), []byte("whatever-was-typed"))
+	if err != nil {
+		t.Fatalf("alice: %v", err)
+	}
+	if u.UserName != "alice" || u.Uri != "tcp://10.0.0.21:22" {
+		t.Errorf("UserName=%q Uri=%q", u.UserName, u.Uri)
+	}
+	if got := u.GetPassword().GetPassword(); got != "whatever-was-typed" {
+		t.Errorf("password = %q", got)
 	}
 
 	// the stored password is never used for password logins
-	u, _ := f.r.password(connTo("alice", "192.0.2.10:22"), []byte("x"))
 	if strings.Contains(u.GetPassword().GetPassword(), "s3cret") {
 		t.Error("stored password leaked into a login attempt")
+	}
+
+	// an unknown user on the same IP fails exactly like a wrong credential
+	for _, user := range []string{"root", "nosuchuser"} {
+		if _, err := f.r.password(connTo(user, "192.0.2.10:22"), []byte("x")); err == nil {
+			t.Errorf("unknown user %q was served", user)
+		}
 	}
 }
 
@@ -183,36 +204,42 @@ func TestPublicKey(t *testing.T) {
 func TestNextAuthMethods(t *testing.T) {
 	f := newFixture(t)
 
-	// probed entries offer what the backend offered, in its order,
-	// whatever their own credential is
+	// the site persona's methods are offered, the same for every username
 	for _, dst := range []string{"192.0.2.10:22", "192.0.2.11:22"} {
-		got, err := f.r.nextAuthMethods(connTo("", dst))
-		if err != nil || strings.Join(got, ",") != "publickey,password" {
-			t.Errorf("%s: %v, %v", dst, got, err)
+		for _, user := range []string{"alice", "bob", "nosuchuser"} {
+			got, err := f.r.nextAuthMethods(connTo(user, dst))
+			if err != nil || strings.Join(got, ",") != "publickey,password" {
+				t.Errorf("%s as %q: %v, %v", dst, user, got, err)
+			}
 		}
 	}
 
-	// an entry without persona offers the methods of its credential
 	ctx := context.Background()
-	for ip, want := range map[string]string{"192.0.2.20": "password", "192.0.2.21": "publickey"} {
-		n := registry.NewEntry{ExternalIP: ip, Username: "u", BackendHost: "h", Password: "p"}
-		if want == "publickey" {
-			_, pubLine, priv := keyPair(t)
-			n.Password, n.PublicKey, n.PrivateKey = "", pubLine, priv
-		}
-		e, err := f.rw.Create(ctx, n)
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, s := range []registry.State{registry.StateProbing, registry.StateReady} {
-			if err := f.rw.SetState(ctx, e.ID, s, ""); err != nil {
-				t.Fatal(err)
-			}
-		}
-		got, err := f.r.nextAuthMethods(connTo("", ip+":22"))
-		if err != nil || strings.Join(got, ",") != want {
-			t.Errorf("%s without persona: %v, %v; want %s", ip, got, err, want)
-		}
+	// a site persona with a single method restricts the offer
+	e, err := f.rw.Create(ctx, registry.NewEntry{ExternalIP: "192.0.2.20", Username: "u", BackendHost: "h", Password: "p"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range []registry.State{registry.StateProbing, registry.StateReady} {
+		_ = f.rw.SetState(ctx, e.ID, s, "")
+	}
+	if err := f.rw.SetSitePersona(ctx, "192.0.2.20", registry.Persona{AuthMethods: "password"}); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := f.r.nextAuthMethods(connTo("", "192.0.2.20:22")); err != nil || strings.Join(got, ",") != "password" {
+		t.Errorf("single-method site: %v, %v", got, err)
+	}
+
+	// an IP with a servable account but no site persona offers the generic set
+	e2, err := f.rw.Create(ctx, registry.NewEntry{ExternalIP: "192.0.2.21", Username: "u", BackendHost: "h", Password: "p"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range []registry.State{registry.StateProbing, registry.StateReady} {
+		_ = f.rw.SetState(ctx, e2.ID, s, "")
+	}
+	if got, err := f.r.nextAuthMethods(connTo("", "192.0.2.21:22")); err != nil || strings.Join(got, ",") != "password,publickey" {
+		t.Errorf("no-persona site fallback: %v, %v", got, err)
 	}
 }
 

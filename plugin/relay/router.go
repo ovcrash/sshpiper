@@ -31,19 +31,28 @@ func newRouter(db *registry.DB) *router { return &router{db: db} }
 
 var errNotServed = errors.New("address not in service")
 
-// entryFor returns the entry of the address the client connected to. Entries
-// that are not exposed (or ready, for verification) are not served.
-func (r *router) entryFor(conn libplugin.ConnMetadata) (*registry.Entry, error) {
-	dst := conn.GetMeta(metaDstAddr)
-	host, _, err := net.SplitHostPort(dst)
+// dstIP returns the external IP the client connected to.
+func dstIP(conn libplugin.ConnMetadata) (string, error) {
+	host, _, err := net.SplitHostPort(conn.GetMeta(metaDstAddr))
 	if err != nil {
-		return nil, fmt.Errorf("%w: no destination address", errNotServed)
+		return "", fmt.Errorf("%w: no destination address", errNotServed)
 	}
+	return host, nil
+}
 
+// accountFor returns the account for (external IP, username) the client is
+// authenticating as. Accounts that are not exposed (or ready, for verification)
+// are not served. A missing account returns errNotServed, so an unknown user
+// fails exactly like a wrong credential (no account enumeration).
+func (r *router) accountFor(conn libplugin.ConnMetadata) (*registry.Entry, error) {
+	host, err := dstIP(conn)
+	if err != nil {
+		return nil, err
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), lookupTimeout)
 	defer cancel()
 
-	e, err := r.db.ByExternalIP(ctx, host)
+	e, err := r.db.ByExternalIPAndUser(ctx, host, conn.User())
 	if err != nil {
 		return nil, errNotServed
 	}
@@ -53,18 +62,29 @@ func (r *router) entryFor(conn libplugin.ConnMetadata) (*registry.Entry, error) 
 	return e, nil
 }
 
+// newConnection runs before the username is known, so it only checks that the
+// site (external IP) has at least one servable account.
 func (r *router) newConnection(conn libplugin.ConnMetadata) error {
-	_, err := r.entryFor(conn)
-	return err
+	host, err := dstIP(conn)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), lookupTimeout)
+	defer cancel()
+
+	site, err := r.db.SiteByExternalIP(ctx, host)
+	if err != nil || !(site.Servable || site.Ready) {
+		return errNotServed
+	}
+	return nil
 }
 
-// nextAuthMethods announces the methods the backend announced when it was
-// probed (those this plugin can carry), whether or not the entry's credential
-// uses them: a client must see the same offer as on the backend. Attempts
-// that do not match the credential are refused by the other callbacks. An
-// entry that was never probed offers the methods of its credential.
+// nextAuthMethods announces the methods of the site persona (what the backend
+// announced when probed), the same for every username so an unknown user is
+// offered exactly what a valid one is — no account enumeration. The credential
+// callbacks then accept or refuse per account.
 func (r *router) nextAuthMethods(conn libplugin.ConnMetadata) ([]string, error) {
-	e, err := r.entryFor(conn)
+	host, err := dstIP(conn)
 	if err != nil {
 		return nil, err
 	}
@@ -72,8 +92,13 @@ func (r *router) nextAuthMethods(conn libplugin.ConnMetadata) ([]string, error) 
 	ctx, cancel := context.WithTimeout(context.Background(), lookupTimeout)
 	defer cancel()
 
+	site, err := r.db.SiteByExternalIP(ctx, host)
+	if err != nil || !(site.Servable || site.Ready) {
+		return nil, errNotServed
+	}
+
 	var methods []string
-	if p, err := r.db.Persona(ctx, e.ID); err == nil {
+	if p, err := r.db.SitePersona(ctx, host); err == nil {
 		seen := map[string]bool{}
 		for _, m := range strings.Split(p.AuthMethods, ",") {
 			m = strings.TrimSpace(m)
@@ -83,15 +108,8 @@ func (r *router) nextAuthMethods(conn libplugin.ConnMetadata) ([]string, error) 
 			}
 		}
 	}
-	if len(methods) > 0 {
-		return methods, nil
-	}
-
-	if e.AuthPassword {
-		methods = append(methods, "password")
-	}
-	if e.AuthKey {
-		methods = append(methods, "publickey")
+	if len(methods) == 0 {
+		methods = []string{"password", "publickey"} // generic, uniform fallback
 	}
 	return methods, nil
 }
@@ -99,7 +117,7 @@ func (r *router) nextAuthMethods(conn libplugin.ConnMetadata) ([]string, error) 
 // password forwards the user name and password as typed: the backend judges,
 // including for names that do not exist there.
 func (r *router) password(conn libplugin.ConnMetadata, password []byte) (*libplugin.Upstream, error) {
-	e, err := r.entryFor(conn)
+	e, err := r.accountFor(conn)
 	if err != nil {
 		return nil, err
 	}
@@ -117,7 +135,7 @@ func (r *router) password(conn libplugin.ConnMetadata, password []byte) (*libplu
 // publicKey accepts exactly the public key of the entry and then
 // authenticates to the backend with the stored private key.
 func (r *router) publicKey(conn libplugin.ConnMetadata, key []byte) (*libplugin.Upstream, error) {
-	e, err := r.entryFor(conn)
+	e, err := r.accountFor(conn)
 	if err != nil {
 		return nil, err
 	}
@@ -144,15 +162,9 @@ func (r *router) publicKey(conn libplugin.ConnMetadata, key []byte) (*libplugin.
 func (r *router) upstream(e *registry.Entry, user string) (*libplugin.Upstream, error) {
 	addr := net.JoinHostPort(e.BackendHost, strconv.Itoa(e.BackendPort))
 
-	ctx, cancel := context.WithTimeout(context.Background(), lookupTimeout)
-	defer cancel()
-
-	var known []byte
-	if p, err := r.db.Persona(ctx, e.ID); err == nil {
-		known, err = knownHostsData(addr, p)
-		if err != nil {
-			return nil, fmt.Errorf("entry %d: %w", e.ID, err)
-		}
+	known, err := knownHostsData(addr, e)
+	if err != nil {
+		return nil, fmt.Errorf("entry %d: %w", e.ID, err)
 	}
 
 	return &libplugin.Upstream{
@@ -162,20 +174,24 @@ func (r *router) upstream(e *registry.Entry, user string) (*libplugin.Upstream, 
 	}, nil
 }
 
-// knownHostsData pins the backend to the host keys of its persona.
-func knownHostsData(addr string, p *registry.Persona) ([]byte, error) {
-	if !p.HasHostKeys() {
-		return nil, nil
-	}
-
+// knownHostsData pins the backend to its own captured public host keys (the
+// pin), which is separate from the site persona the proxy presents. Returns
+// nil when the account has no captured keys yet (not probed).
+func knownHostsData(addr string, e *registry.Entry) ([]byte, error) {
 	var buf bytes.Buffer
-	for _, k := range []string{p.HostKeyED25519, p.HostKeyECDSA, p.HostKeyRSA} {
-		s, err := ssh.ParsePrivateKey([]byte(k))
-		if err != nil {
-			return nil, fmt.Errorf("host key: %w", err)
+	for _, authk := range []string{e.BackendHostED25519, e.BackendHostECDSA, e.BackendHostRSA} {
+		if authk == "" {
+			continue
 		}
-		buf.WriteString(knownhosts.Line([]string{addr}, s.PublicKey()))
+		pk, _, _, _, err := ssh.ParseAuthorizedKey([]byte(authk))
+		if err != nil {
+			return nil, fmt.Errorf("backend host key: %w", err)
+		}
+		buf.WriteString(knownhosts.Line([]string{addr}, pk))
 		buf.WriteByte('\n')
+	}
+	if buf.Len() == 0 {
+		return nil, nil
 	}
 	return buf.Bytes(), nil
 }
