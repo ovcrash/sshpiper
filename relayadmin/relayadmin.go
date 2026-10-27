@@ -118,6 +118,16 @@ func (s *Service) Retire(ctx context.Context, e *registry.Entry) error {
 	return s.moveTo(ctx, e, registry.StateRetired, "")
 }
 
+// Reactivate brings a retired entry back to draft so it can be probed and
+// exposed again; its persona and credentials are kept. It fails if another
+// live entry already holds the same external IP (registry.ErrExists).
+func (s *Service) Reactivate(ctx context.Context, e *registry.Entry) error {
+	if e.State != registry.StateRetired {
+		return fmt.Errorf("entry %d is %s: only a retired entry can be reactivated", e.ID, e.State)
+	}
+	return s.moveTo(ctx, e, registry.StateDraft, "reactivated")
+}
+
 // RunRetireHook runs a shell command after a retire, with EXTERNAL_IP and
 // ENTRY_ID in the environment (to remove or firewall the address), and
 // records the outcome. A nil hookCmd is a no-op.

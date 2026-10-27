@@ -30,6 +30,7 @@ func (s *server) routes() http.Handler {
 	mux.HandleFunc("POST /v1/entries/{ip}/probe", s.probe)
 	mux.HandleFunc("POST /v1/entries/{ip}/expose", s.expose)
 	mux.HandleFunc("POST /v1/entries/{ip}/retire", s.retire)
+	mux.HandleFunc("POST /v1/entries/{ip}/reactivate", s.reactivate)
 
 	// read-only audit browsing (enabled by --audit-dir)
 	mux.HandleFunc("GET /v1/audit/sessions", s.auditSessions)
@@ -236,6 +237,18 @@ func (s *server) retire(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := s.svc.RunRetireHook(r.Context(), e, req.HookCmd); err != nil {
 		writeError(w, http.StatusInternalServerError, "retired, but the hook failed: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, view(e))
+}
+
+func (s *server) reactivate(w http.ResponseWriter, r *http.Request) {
+	e := s.lookup(w, r)
+	if e == nil {
+		return
+	}
+	if err := s.svc.Reactivate(r.Context(), e); err != nil {
+		writeOpError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, view(e))

@@ -156,3 +156,37 @@ func TestLifecycleAndNoRestart(t *testing.T) {
 		t.Fatalf("reader sees state %s after retire", e.State)
 	}
 }
+
+func TestReactivateAndReuseIP(t *testing.T) {
+	ts, _ := newTestServer(t)
+	mk := func() (int, string) {
+		return do(t, ts, "POST", "/v1/entries", testToken, `{"external_ip":"203.0.113.50","username":"u","backend_host":"10.0.0.21","password":"pw"}`)
+	}
+
+	if code, b := mk(); code != http.StatusCreated {
+		t.Fatalf("create: %d %s", code, b)
+	}
+	if code, _ := do(t, ts, "POST", "/v1/entries/203.0.113.50/retire", testToken, "{}"); code != http.StatusOK {
+		t.Fatal("retire failed")
+	}
+
+	// reactivate brings it back to draft
+	code, b := do(t, ts, "POST", "/v1/entries/203.0.113.50/reactivate", testToken, "")
+	if code != http.StatusOK || !strings.Contains(b, `"state":"draft"`) {
+		t.Fatalf("reactivate: %d %s", code, b)
+	}
+
+	// retire again, then the IP can be reused by a brand-new entry
+	if code, _ := do(t, ts, "POST", "/v1/entries/203.0.113.50/retire", testToken, "{}"); code != http.StatusOK {
+		t.Fatal("second retire failed")
+	}
+	if code, b := mk(); code != http.StatusCreated {
+		t.Fatalf("reuse IP after retire: %d %s", code, b)
+	}
+
+	// the IP now resolves to the live (reused) entry, not the retired one
+	_, b = do(t, ts, "GET", "/v1/entries/203.0.113.50", testToken, "")
+	if !strings.Contains(b, `"state":"draft"`) {
+		t.Fatalf("reused IP entry should be live draft: %s", b)
+	}
+}

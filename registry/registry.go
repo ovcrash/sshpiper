@@ -147,6 +147,33 @@ var migrations = []string{
 		detail   TEXT
 	);
 	CREATE INDEX registry_events_entry ON registry_events(entry_id);`,
+
+	// v2: drop the column-level UNIQUE on external_ip and replace it with a
+	// partial unique index that only covers live (non-retired) entries, so the
+	// address of a retired entry can be reused by a new one while the retired
+	// row is kept for history. SQLite cannot drop an inline UNIQUE, so the
+	// table is rebuilt; ids are preserved, keeping the personas/events FKs
+	// valid. migrate() runs this with foreign_keys OFF (see below).
+	`CREATE TABLE entries_new (
+		id            INTEGER PRIMARY KEY,
+		external_ip   TEXT    NOT NULL,
+		username      TEXT    NOT NULL,
+		auth_password INTEGER NOT NULL DEFAULT 0,
+		password      TEXT,
+		auth_key      INTEGER NOT NULL DEFAULT 0,
+		public_key    TEXT,
+		private_key   TEXT,
+		backend_host  TEXT    NOT NULL,
+		backend_port  INTEGER NOT NULL DEFAULT 22,
+		state         TEXT    NOT NULL CHECK (state IN ('draft','probing','ready','exposed','retired','needs_check')),
+		created_at    TEXT    NOT NULL,
+		updated_at    TEXT    NOT NULL,
+		retired_at    TEXT
+	);
+	INSERT INTO entries_new SELECT * FROM entries;
+	DROP TABLE entries;
+	ALTER TABLE entries_new RENAME TO entries;
+	CREATE UNIQUE INDEX entries_live_ip ON entries(external_ip) WHERE state != 'retired';`,
 }
 
 func (db *DB) migrate(ctx context.Context) error {
@@ -157,9 +184,30 @@ func (db *DB) migrate(ctx context.Context) error {
 	if version > len(migrations) {
 		return fmt.Errorf("registry: database version %d is newer than this program (%d)", version, len(migrations))
 	}
+	if version == len(migrations) {
+		return nil
+	}
+
+	// Run migrations on a dedicated connection with foreign_keys OFF: a
+	// migration may rebuild a referenced table (DROP + RENAME), which the FK
+	// enforcement enabled in the DSN would otherwise block. foreign_keys
+	// cannot be toggled inside a transaction, so it is set on the connection
+	// around the transactions. With MaxOpenConns(1) this same connection is
+	// reused afterwards, so it is restored to ON before being released.
+	conn, err := db.sql.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("registry: %w", err)
+	}
+	defer func() {
+		_, _ = conn.ExecContext(ctx, "PRAGMA foreign_keys = ON")
+		_ = conn.Close()
+	}()
+	if _, err := conn.ExecContext(ctx, "PRAGMA foreign_keys = OFF"); err != nil {
+		return fmt.Errorf("registry: %w", err)
+	}
 
 	for v := version; v < len(migrations); v++ {
-		tx, err := db.sql.BeginTx(ctx, nil)
+		tx, err := conn.BeginTx(ctx, nil)
 		if err != nil {
 			return fmt.Errorf("registry: %w", err)
 		}
@@ -177,6 +225,15 @@ func (db *DB) migrate(ctx context.Context) error {
 		}
 	}
 
+	// Verify the rebuild left no dangling references.
+	rows, err := conn.QueryContext(ctx, "PRAGMA foreign_key_check")
+	if err != nil {
+		return fmt.Errorf("registry: %w", err)
+	}
+	defer rows.Close()
+	if rows.Next() {
+		return errors.New("registry: foreign key check failed after migration")
+	}
 	return nil
 }
 

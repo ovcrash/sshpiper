@@ -160,7 +160,10 @@ func (db *DB) ByExternalIP(ctx context.Context, ip string) (*Entry, error) {
 	if err != nil {
 		return nil, ErrNotFound
 	}
-	return db.one(ctx, "SELECT "+entryColumns+" FROM entries WHERE external_ip = ?", norm)
+	// An IP can carry one live entry plus retired ones (after reuse). Prefer
+	// the live entry, else the most recently updated retired one.
+	return db.one(ctx, "SELECT "+entryColumns+" FROM entries WHERE external_ip = ? "+
+		"ORDER BY (state = 'retired'), updated_at DESC LIMIT 1", norm)
 }
 
 func (db *DB) one(ctx context.Context, query string, args ...any) (*Entry, error) {
@@ -191,7 +194,8 @@ func (db *DB) RouteByExternalIP(ctx context.Context, ip string) (*Route, error) 
 	}
 	var r Route
 	var state string
-	err = db.sql.QueryRowContext(ctx, "SELECT id, state, updated_at FROM entries WHERE external_ip = ?", norm).Scan(&r.ID, &state, &r.UpdatedAt)
+	err = db.sql.QueryRowContext(ctx, "SELECT id, state, updated_at FROM entries WHERE external_ip = ? "+
+		"ORDER BY (state = 'retired'), updated_at DESC LIMIT 1", norm).Scan(&r.ID, &state, &r.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -260,12 +264,25 @@ func (db *DB) SetState(ctx context.Context, id int64, to State, detail string) e
 	}
 
 	ts := now()
-	retiredAt := any(nil)
-	if to == StateRetired {
-		retiredAt = ts
+	// retired_at: set it when retiring, clear it when reactivating (leaving
+	// retired), keep it unchanged otherwise.
+	var query string
+	var args []any
+	switch {
+	case to == StateRetired:
+		query = "UPDATE entries SET state = ?, updated_at = ?, retired_at = ? WHERE id = ?"
+		args = []any{string(to), ts, ts, id}
+	case State(from) == StateRetired:
+		query = "UPDATE entries SET state = ?, updated_at = ?, retired_at = NULL WHERE id = ?"
+		args = []any{string(to), ts, id}
+	default:
+		query = "UPDATE entries SET state = ?, updated_at = ? WHERE id = ?"
+		args = []any{string(to), ts, id}
 	}
-	if _, err := tx.ExecContext(ctx, "UPDATE entries SET state = ?, updated_at = ?, retired_at = COALESCE(?, retired_at) WHERE id = ?",
-		string(to), ts, retiredAt, id); err != nil {
+	if _, err := tx.ExecContext(ctx, query, args...); err != nil {
+		if strings.Contains(err.Error(), "UNIQUE") {
+			return fmt.Errorf("%w: external IP already in use by a live entry", ErrExists)
+		}
 		return fmt.Errorf("registry: %w", err)
 	}
 

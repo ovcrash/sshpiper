@@ -15,14 +15,15 @@ const (
 )
 
 // transitions lists the allowed moves. Retiring is possible from any live
-// state; retired is final.
+// state; a retired entry can be reactivated back to draft (then probed and
+// exposed again).
 var transitions = map[State][]State{
 	StateDraft:      {StateProbing, StateRetired},
 	StateProbing:    {StateReady, StateDraft, StateRetired},
 	StateReady:      {StateExposed, StateProbing, StateRetired},
 	StateExposed:    {StateNeedsCheck, StateRetired},
 	StateNeedsCheck: {StateProbing, StateRetired},
-	StateRetired:    nil,
+	StateRetired:    {StateDraft},
 }
 
 // Valid reports whether s is a known state.
