@@ -100,59 +100,67 @@ func TestReactivateConflictsWithLiveIP(t *testing.T) {
 	}
 }
 
-func TestMigrationV1toV2PreservesData(t *testing.T) {
+func TestMigrationV2toV3PreservesData(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "r.db")
 	ctx := context.Background()
 
-	// open at v1 only, populate, then migrate to v2 on reopen
-	saved := migrations
-	migrations = migrations[:1]
-	defer func() { migrations = saved }()
+	hk, err := GenerateHostKeys()
+	if err != nil {
+		t.Fatal(err)
+	}
 
+	// Open at v2 (no backend_hostkey columns, IP-unique), insert an entry and
+	// its persona with raw SQL (the v2 schema), then migrate to v3 on reopen.
+	saved := migrations
+	migrations = migrations[:2]
 	db, err := Open(path, Options{})
 	if err != nil {
+		migrations = saved
 		t.Fatal(err)
 	}
-	a, err := db.Create(ctx, newPasswordEntry("192.0.2.40"))
-	if err != nil {
+	ts := now()
+	if _, err := db.sql.ExecContext(ctx, `INSERT INTO entries
+		(id, external_ip, username, auth_password, password, auth_key, backend_host, backend_port, state, created_at, updated_at)
+		VALUES (1,'192.0.2.40','alice',1,'pw',0,'10.0.0.21',22,'exposed',?,?)`, ts, ts); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Create(ctx, newPasswordEntry("192.0.2.41")); err != nil {
-		t.Fatal(err)
-	}
-	// give a a persona and retire it, to exercise FK rows across the rebuild
-	hk, _ := GenerateHostKeys()
-	p := &Persona{EntryID: a.ID}
-	p.SetHostKeys(*hk)
-	if err := db.SetPersona(ctx, *p, "persona_generated", "x"); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.SetState(ctx, a.ID, StateRetired, "test"); err != nil {
+	if _, err := db.sql.ExecContext(ctx, `INSERT INTO personas
+		(entry_id, ssh_version, host_key_ed25519, host_key_ecdsa, host_key_rsa, auth_methods, probed_at)
+		VALUES (1,'SSH-2.0-OpenSSH_9.6',?,?,?,'password',?)`, hk.ED25519, hk.ECDSA, hk.RSA, ts); err != nil {
 		t.Fatal(err)
 	}
 	_ = db.Close()
-
-	// reopen with the full migration set -> runs v2 (table rebuild)
 	migrations = saved
+
 	db2, err := Open(path, Options{})
 	if err != nil {
-		t.Fatalf("migrate v1->v2: %v", err)
+		t.Fatalf("migrate v2->v3: %v", err)
 	}
 	t.Cleanup(func() { _ = db2.Close() })
 
-	// rows preserved, ids intact, persona FK still resolves
-	all, err := db2.List(ctx)
+	// the account is preserved, and its backend host keys were backfilled from
+	// the persona's private keys (the public parts)
+	e, err := db2.ByID(ctx, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(all) != 2 {
-		t.Fatalf("after migration: %d entries, want 2", len(all))
+	if e.BackendHostED25519 == "" || e.BackendHostECDSA == "" || e.BackendHostRSA == "" {
+		t.Errorf("backend host keys not backfilled: %+v", e)
 	}
-	if _, err := db2.Persona(ctx, a.ID); err != nil {
-		t.Errorf("persona lost across migration: %v", err)
+	// the site persona was created for the IP, with the presented host keys
+	sp, err := db2.SitePersona(ctx, "192.0.2.40")
+	if err != nil {
+		t.Fatalf("site persona missing: %v", err)
 	}
-	// the v2 partial index now allows reusing the retired IP
-	if _, err := db2.Create(ctx, newPasswordEntry("192.0.2.40")); err != nil {
-		t.Errorf("reuse retired IP after migration: %v", err)
+	if !sp.HasHostKeys() || sp.SSHVersion != "SSH-2.0-OpenSSH_9.6" {
+		t.Errorf("site persona wrong: %+v", sp)
+	}
+	// (IP, user) uniqueness: a second user on the same IP is allowed
+	if _, err := db2.Create(ctx, NewEntry{ExternalIP: "192.0.2.40", Username: "bob", BackendHost: "10.0.0.21", Password: "pw"}); err != nil {
+		t.Errorf("second user on same IP should be allowed: %v", err)
+	}
+	// but the same (IP, user) twice is refused
+	if _, err := db2.Create(ctx, NewEntry{ExternalIP: "192.0.2.40", Username: "bob", BackendHost: "10.0.0.21", Password: "pw"}); !errors.Is(err, ErrExists) {
+		t.Errorf("duplicate (IP,user): want ErrExists, got %v", err)
 	}
 }

@@ -25,6 +25,13 @@ type Entry struct {
 	CreatedAt    string
 	UpdatedAt    string
 	RetiredAt    string
+
+	// BackendHostKeys are the backend's real public host keys (authorized-key
+	// form), captured at probe, used to pin the proxy->backend connection.
+	// Separate from the site persona, which is what the proxy presents.
+	BackendHostED25519 string
+	BackendHostECDSA   string
+	BackendHostRSA     string
 }
 
 // Redacted returns a copy without secrets.
@@ -81,7 +88,8 @@ var stateEvents = map[State]string{
 
 const entryColumns = `id, external_ip, username, auth_password, COALESCE(password,''), auth_key,
 	COALESCE(public_key,''), COALESCE(private_key,''), backend_host, backend_port, state,
-	created_at, updated_at, COALESCE(retired_at,'')`
+	created_at, updated_at, COALESCE(retired_at,''),
+	COALESCE(backend_hostkey_ed25519,''), COALESCE(backend_hostkey_ecdsa,''), COALESCE(backend_hostkey_rsa,'')`
 
 type rowScanner interface {
 	Scan(dest ...any) error
@@ -92,7 +100,8 @@ func scanEntry(r rowScanner) (*Entry, error) {
 	var ap, ak int
 	var state string
 	if err := r.Scan(&e.ID, &e.ExternalIP, &e.Username, &ap, &e.Password, &ak, &e.PublicKey, &e.PrivateKey,
-		&e.BackendHost, &e.BackendPort, &state, &e.CreatedAt, &e.UpdatedAt, &e.RetiredAt); err != nil {
+		&e.BackendHost, &e.BackendPort, &state, &e.CreatedAt, &e.UpdatedAt, &e.RetiredAt,
+		&e.BackendHostED25519, &e.BackendHostECDSA, &e.BackendHostRSA); err != nil {
 		return nil, err
 	}
 	e.AuthPassword = ap != 0
@@ -130,7 +139,7 @@ func (db *DB) Create(ctx context.Context, n NewEntry) (*Entry, error) {
 		string(StateDraft), ts, ts)
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE") {
-			return nil, fmt.Errorf("%w: %s", ErrExists, ip)
+			return nil, fmt.Errorf("%w: %s@%s", ErrExists, n.Username, ip)
 		}
 		return nil, fmt.Errorf("registry: %w", err)
 	}
@@ -164,6 +173,55 @@ func (db *DB) ByExternalIP(ctx context.Context, ip string) (*Entry, error) {
 	// the live entry, else the most recently updated retired one.
 	return db.one(ctx, "SELECT "+entryColumns+" FROM entries WHERE external_ip = ? "+
 		"ORDER BY (state = 'retired'), updated_at DESC LIMIT 1", norm)
+}
+
+// ByExternalIPAndUser returns the account for (IP, username), preferring the
+// live one over retired, or ErrNotFound. This is the routing key.
+func (db *DB) ByExternalIPAndUser(ctx context.Context, ip, user string) (*Entry, error) {
+	norm, err := NormalizeIP(ip)
+	if err != nil {
+		return nil, ErrNotFound
+	}
+	return db.one(ctx, "SELECT "+entryColumns+" FROM entries WHERE external_ip = ? AND username = ? "+
+		"ORDER BY (state = 'retired'), updated_at DESC LIMIT 1", norm, user)
+}
+
+// ListByIP returns all accounts on an external IP, newest first.
+func (db *DB) ListByIP(ctx context.Context, ip string) ([]*Entry, error) {
+	norm, err := NormalizeIP(ip)
+	if err != nil {
+		return nil, ErrNotFound
+	}
+	rows, err := db.sql.QueryContext(ctx, "SELECT "+entryColumns+" FROM entries WHERE external_ip = ? "+
+		"ORDER BY (state = 'retired'), updated_at DESC", norm)
+	if err != nil {
+		return nil, fmt.Errorf("registry: %w", err)
+	}
+	defer rows.Close()
+	var out []*Entry
+	for rows.Next() {
+		e, err := scanEntry(rows)
+		if err != nil {
+			return nil, fmt.Errorf("registry: %w", err)
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+// SetBackendHostKeys stores the backend's captured public host keys (used to
+// pin the proxy->backend connection) and records an event.
+func (db *DB) SetBackendHostKeys(ctx context.Context, id int64, ed25519, ecdsa, rsa string) error {
+	if err := db.writable(); err != nil {
+		return err
+	}
+	_, err := db.sql.ExecContext(ctx,
+		"UPDATE entries SET backend_hostkey_ed25519 = ?, backend_hostkey_ecdsa = ?, backend_hostkey_rsa = ?, updated_at = ? WHERE id = ?",
+		nullable(ed25519), nullable(ecdsa), nullable(rsa), now(), id)
+	if err != nil {
+		return fmt.Errorf("registry: %w", err)
+	}
+	return nil
 }
 
 func (db *DB) one(ctx context.Context, query string, args ...any) (*Entry, error) {

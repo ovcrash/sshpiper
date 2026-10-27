@@ -174,6 +174,51 @@ var migrations = []string{
 	DROP TABLE entries;
 	ALTER TABLE entries_new RENAME TO entries;
 	CREATE UNIQUE INDEX entries_live_ip ON entries(external_ip) WHERE state != 'retired';`,
+
+	// v3: multiple users per external IP. Accounts are keyed by
+	// (external_ip, username); the persona moves per-IP (site_personas),
+	// because host keys are presented at KEX before the username. Each account
+	// gains the backend's real public host keys (the pin), captured at probe.
+	// The v3 Go backfill (migrateV3) fills those from the existing per-entry
+	// persona, so behaviour is preserved. The old personas table is kept for
+	// one version (unused by the code).
+	`ALTER TABLE entries ADD COLUMN backend_hostkey_ed25519 TEXT;
+	ALTER TABLE entries ADD COLUMN backend_hostkey_ecdsa TEXT;
+	ALTER TABLE entries ADD COLUMN backend_hostkey_rsa TEXT;
+	DROP INDEX IF EXISTS entries_live_ip;
+	CREATE UNIQUE INDEX entries_live_account ON entries(external_ip, username) WHERE state != 'retired';
+	CREATE TABLE site_personas (
+		external_ip      TEXT PRIMARY KEY,
+		ssh_version      TEXT,
+		host_key_ed25519 TEXT,
+		host_key_ecdsa   TEXT,
+		host_key_rsa     TEXT,
+		kex              TEXT,
+		host_key_algs    TEXT,
+		ciphers          TEXT,
+		macs             TEXT,
+		compression      TEXT,
+		auth_methods     TEXT,
+		hassh_server     TEXT,
+		probe_hash       TEXT,
+		probed_at        TEXT,
+		updated_at       TEXT
+	);
+	INSERT OR IGNORE INTO site_personas
+		(external_ip, ssh_version, host_key_ed25519, host_key_ecdsa, host_key_rsa, kex, host_key_algs, ciphers,
+		 macs, compression, auth_methods, hassh_server, probe_hash, probed_at, updated_at)
+		SELECT e.external_ip, p.ssh_version, p.host_key_ed25519, p.host_key_ecdsa, p.host_key_rsa, p.kex,
+		 p.host_key_algs, p.ciphers, p.macs, p.compression, p.auth_methods, p.hassh_server, p.probe_hash,
+		 p.probed_at, e.updated_at
+		FROM personas p JOIN entries e ON e.id = p.entry_id
+		ORDER BY (e.state = 'retired'), e.updated_at DESC;`,
+}
+
+// dataMigrations hold Go transforms that run inside the transaction of a
+// schema migration (keyed by target version) when a pure-SQL step cannot do
+// the work (e.g. deriving public keys from private ones).
+var dataMigrations = map[int]func(ctx context.Context, tx *sql.Tx) error{
+	3: migrateV3,
 }
 
 func (db *DB) migrate(ctx context.Context) error {
@@ -214,6 +259,12 @@ func (db *DB) migrate(ctx context.Context) error {
 		if _, err := tx.ExecContext(ctx, migrations[v]); err != nil {
 			_ = tx.Rollback()
 			return fmt.Errorf("registry: migration %d: %w", v+1, err)
+		}
+		if fn := dataMigrations[v+1]; fn != nil {
+			if err := fn(ctx, tx); err != nil {
+				_ = tx.Rollback()
+				return fmt.Errorf("registry: migration %d (data): %w", v+1, err)
+			}
 		}
 		// PRAGMA does not accept bound parameters
 		if _, err := tx.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version = %d", v+1)); err != nil {
