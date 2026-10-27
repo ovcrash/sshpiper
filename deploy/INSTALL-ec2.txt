@@ -231,6 +231,84 @@ Check both are active after a reboot:
      systemctl is-active  relay-proxy relay-admind      # -> active
 
 
+12. Ship logs to CloudWatch (optional)
+--------------------------------------
+The proxy produces two kinds of output:
+  - audit records      JSON lines under SSHPIPERD_AUDIT_DIR (logins, commands,
+                       HASSH, file hashes) — the high-value sensor data;
+  - diagnostic logs    log/slog on stderr, captured by journald by default.
+The Amazon CloudWatch agent can ship both as log files. (It does not read
+journald directly, so step c redirects the diagnostic logs to a file.)
+
+a) IAM: give the instance a role whose policy includes CloudWatchAgentServerPolicy
+   (it grants logs:CreateLogGroup/CreateLogStream/PutLogEvents). Attach it as the
+   instance profile — no keys on the box.
+
+b) Install the agent:
+     cd /tmp
+     curl -fsSLO https://amazoncloudwatch-agent.s3.amazonaws.com/ubuntu/amd64/latest/amazon-cloudwatch-agent.deb
+     sudo dpkg -i amazon-cloudwatch-agent.deb
+
+c) (Only for the diagnostic logs) send the service's stderr to a file the agent
+   can tail. This replaces journald for this service, so afterwards read it with
+   "tail -f /var/log/relay/proxy.log" instead of journalctl:
+     sudo install -d -o relay -g relay -m 750 /var/log/relay
+     sudo mkdir -p /etc/systemd/system/relay-proxy.service.d
+     sudo tee /etc/systemd/system/relay-proxy.service.d/cloudwatch.conf >/dev/null <<'EOF'
+     [Service]
+     ReadWritePaths=/var/log/relay
+     StandardOutput=append:/var/log/relay/proxy.log
+     StandardError=append:/var/log/relay/proxy.log
+     EOF
+     sudo systemctl daemon-reload && sudo systemctl restart relay-proxy
+   (Do the same under relay-admind.service.d/ for the API/console logs if wanted.
+   Skip this whole step to keep diagnostics in journald and ship only the audit.)
+
+d) Agent config — write /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json:
+     {
+       "agent": { "run_as_user": "root" },
+       "logs": {
+         "logs_collected": {
+           "files": {
+             "collect_list": [
+               {
+                 "file_path": "/var/lib/relay/audit/all-*.jsonl",
+                 "log_group_name": "/relay/audit",
+                 "log_stream_name": "{instance_id}",
+                 "retention_in_days": 90
+               },
+               {
+                 "file_path": "/var/log/relay/proxy.log",
+                 "log_group_name": "/relay/proxy",
+                 "log_stream_name": "{instance_id}",
+                 "retention_in_days": 30
+               }
+             ]
+           }
+         }
+       }
+     }
+   The agent runs as root, so it reads the 0700 relay-owned audit directory. Drop
+   the second entry if you skipped step c.
+
+e) Start the agent with that config and check it:
+     sudo /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl \
+       -a fetch-config -m ec2 -s \
+       -c file:/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json
+     sudo /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a status
+   The log groups /relay/audit and /relay/proxy appear in CloudWatch Logs. Each
+   audit line is one JSON object with a timestamp, so query it with Logs Insights,
+   e.g.:  fields @timestamp, src_ip, username | filter eventid = "piper.login.success"
+
+Notes for CloudWatch:
+  - Ship only the event stream (all-*.jsonl). The asciicast recordings
+    (channel-*.cast) and captured files are large/binary — keep them on the EBS
+    volume, or sync them to S3 (aws s3 sync /var/lib/relay/audit s3://...), not
+    CloudWatch.
+  - A busy sensor produces a lot of events; watch CloudWatch ingestion/retention
+    cost and set retention_in_days to taste.
+
+
 Operational notes
 ------------------
 - Secrets (passwords, private keys) live in the registry in clear text, mode
