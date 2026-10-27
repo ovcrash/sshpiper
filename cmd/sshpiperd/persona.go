@@ -22,15 +22,17 @@ var kexMarkers = map[string]bool{
 }
 
 // personaStore chooses, for each accepted connection, the SSH configuration
-// matching the address the client connected to. Configurations are cached by
-// (entry id, updated_at): any registry write to an entry changes updated_at.
+// matching the address the client connected to. Host keys are presented at KEX
+// before the username, so the persona is per external IP (a "site"), shared by
+// every account on it. Configurations are cached by external IP; the site's
+// cache key changes when the persona or any account on the IP changes.
 type personaStore struct {
 	db         *registry.DB
 	base       ssh.PiperConfig
 	verifyFrom map[netip.Addr]bool
 
 	mu    sync.RWMutex
-	cache map[int64]*cachedPersona
+	cache map[string]*cachedPersona
 }
 
 type cachedPersona struct {
@@ -43,7 +45,7 @@ func newPersonaStore(db *registry.DB, base ssh.PiperConfig, verifyFrom []string)
 		db:         db,
 		base:       base,
 		verifyFrom: make(map[netip.Addr]bool),
-		cache:      make(map[int64]*cachedPersona),
+		cache:      make(map[string]*cachedPersona),
 	}
 	for _, v := range verifyFrom {
 		v = strings.TrimSpace(v)
@@ -83,7 +85,8 @@ func (s *personaStore) configFor(ctx context.Context, local, remote net.Addr) *s
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 
-	route, err := s.db.RouteByExternalIP(ctx, dst.String())
+	ip := dst.String()
+	route, err := s.db.SiteByExternalIP(ctx, ip)
 	if err != nil {
 		if !errors.Is(err, registry.ErrNotFound) {
 			slog.Error("registry lookup failed", "dst", dst, "error", err)
@@ -92,32 +95,32 @@ func (s *personaStore) configFor(ctx context.Context, local, remote net.Addr) *s
 	}
 
 	switch {
-	case route.State.Servable():
-	case route.State == registry.StateReady && s.verifyFrom[src]:
+	case route.Servable:
+	case route.Ready && s.verifyFrom[src]:
 	default:
 		return nil
 	}
 
 	s.mu.RLock()
-	c := s.cache[route.ID]
+	c := s.cache[ip]
 	s.mu.RUnlock()
-	if c != nil && c.updatedAt == route.UpdatedAt {
+	if c != nil && c.updatedAt == route.CacheKey {
 		return c.cfg
 	}
 
-	p, err := s.db.Persona(ctx, route.ID)
+	p, err := s.db.SitePersona(ctx, ip)
 	if err != nil {
-		slog.Error("cannot load persona", "entry", route.ID, "error", err)
+		slog.Error("cannot load site persona", "ip", ip, "error", err)
 		return nil
 	}
 	cfg, err := buildPersonaConfig(s.base, p)
 	if err != nil {
-		slog.Error("cannot build persona configuration", "entry", route.ID, "error", err)
+		slog.Error("cannot build persona configuration", "ip", ip, "error", err)
 		return nil
 	}
 
 	s.mu.Lock()
-	s.cache[route.ID] = &cachedPersona{updatedAt: route.UpdatedAt, cfg: cfg}
+	s.cache[ip] = &cachedPersona{updatedAt: route.CacheKey, cfg: cfg}
 	s.mu.Unlock()
 
 	return cfg

@@ -44,6 +44,10 @@ func seedEntry(t *testing.T, db *registry.DB, ip, version string, state registry
 	if err := db.SetPersona(ctx, p, "persona_generated", ""); err != nil {
 		t.Fatal(err)
 	}
+	// the presented persona is per site (external IP)
+	if err := db.SetSitePersona(ctx, ip, p); err != nil {
+		t.Fatal(err)
+	}
 	for _, to := range statePath(state) {
 		if err := db.SetState(ctx, e.ID, to, ""); err != nil {
 			t.Fatal(err)
@@ -289,7 +293,7 @@ func TestConfigForServability(t *testing.T) {
 func TestPersonaCacheInvalidation(t *testing.T) {
 	ctx := context.Background()
 	rw, ro := openTempRegistry(t)
-	e, _ := seedEntry(t, rw, "192.0.2.10", versionA, registry.StateExposed)
+	_, _ = seedEntry(t, rw, "192.0.2.10", versionA, registry.StateExposed)
 	store, _ := newPersonaStore(ro, ssh.PiperConfig{}, nil)
 
 	local, _ := net.ResolveTCPAddr("tcp", "192.0.2.10:22")
@@ -300,11 +304,11 @@ func TestPersonaCacheInvalidation(t *testing.T) {
 		t.Error("configuration not cached between connections")
 	}
 
-	// a registry write must be visible: updated_at has second resolution
+	// a registry write to the site persona must be visible (second resolution)
 	time.Sleep(1100 * time.Millisecond)
-	p, _ := rw.Persona(ctx, e.ID)
+	p, _ := rw.SitePersona(ctx, "192.0.2.10")
 	p.SSHVersion = versionB
-	if err := rw.SetPersona(ctx, *p, "probed", ""); err != nil {
+	if err := rw.SetSitePersona(ctx, "192.0.2.10", *p); err != nil {
 		t.Fatal(err)
 	}
 	if got := store.configFor(ctx, local, remote); got == nil || got.ServerVersion != versionB {
