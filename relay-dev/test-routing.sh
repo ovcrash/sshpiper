@@ -31,15 +31,15 @@ fingerprints() { # fingerprints HOST: "type fingerprint" lines
 	tester sh -c "ssh-keyscan -t ed25519,ecdsa,rsa $1 2>/dev/null | ssh-keygen -lf - | awk '{print \$4, \$2}' | sort"
 }
 
-echo "== 1. host keys: each address presents the host keys of its own backend"
+echo "== 1. host keys: each address presents its own site persona, decoupled from the backend"
 for pair in "10.99.0.11 10.99.0.21" "10.99.0.12 10.99.0.22"; do
 	set -- $pair
 	front="$(fingerprints "$1")"
 	back="$(fingerprints "$2")"
-	if [ -n "$front" ] && [ "$front" = "$back" ]; then
-		pass "$1 presents exactly the three host keys of $2"
+	if [ -n "$front" ] && [ "$front" != "$back" ]; then
+		pass "$1 presents its own site host keys, distinct from backend $2"
 	else
-		fail "host keys of $1 differ from $2"
+		fail "$1 should present the generated site persona, not the backend's keys"
 		echo "$front" && echo "$back"
 	fi
 done
