@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 
 	"github.com/tg123/sshpiper/auditindex"
 	"github.com/tg123/sshpiper/registry"
@@ -21,16 +22,20 @@ func (s *server) routes() http.Handler {
 	mux.HandleFunc("GET /v1/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
-	mux.HandleFunc("POST /v1/entries", s.createEntry)
-	mux.HandleFunc("GET /v1/entries", s.listEntries)
-	mux.HandleFunc("GET /v1/entries/{ip}", s.getEntry)
-	mux.HandleFunc("POST /v1/entries/{ip}/persona/generate", s.genPersona)
-	mux.HandleFunc("POST /v1/entries/{ip}/persona/import", s.importPersona)
-	mux.HandleFunc("GET /v1/entries/{ip}/persona/keys", s.exportKeys)
-	mux.HandleFunc("POST /v1/entries/{ip}/probe", s.probe)
-	mux.HandleFunc("POST /v1/entries/{ip}/expose", s.expose)
-	mux.HandleFunc("POST /v1/entries/{ip}/retire", s.retire)
-	mux.HandleFunc("POST /v1/entries/{ip}/reactivate", s.reactivate)
+	// accounts (one per (external IP, username)), addressed by id
+	mux.HandleFunc("POST /v1/accounts", s.createAccount)
+	mux.HandleFunc("GET /v1/accounts", s.listAccounts) // optional ?ip=
+	mux.HandleFunc("GET /v1/accounts/{id}", s.getAccount)
+	mux.HandleFunc("POST /v1/accounts/{id}/probe", s.probe)
+	mux.HandleFunc("POST /v1/accounts/{id}/expose", s.expose)
+	mux.HandleFunc("POST /v1/accounts/{id}/retire", s.retire)
+	mux.HandleFunc("POST /v1/accounts/{id}/reactivate", s.reactivate)
+
+	// sites (one per external IP): the presented persona, shared by its accounts
+	mux.HandleFunc("GET /v1/sites/{ip}", s.getSite)
+	mux.HandleFunc("POST /v1/sites/{ip}/persona/generate", s.siteGenPersona)
+	mux.HandleFunc("POST /v1/sites/{ip}/persona/import", s.siteImportPersona)
+	mux.HandleFunc("GET /v1/sites/{ip}/persona/keys", s.siteExportKeys)
 
 	// read-only audit browsing (enabled by --audit-dir)
 	mux.HandleFunc("GET /v1/audit/sessions", s.auditSessions)
@@ -81,7 +86,7 @@ func view(e *registry.Entry) entryView {
 
 // --- handlers ---
 
-func (s *server) createEntry(w http.ResponseWriter, r *http.Request) {
+func (s *server) createAccount(w http.ResponseWriter, r *http.Request) {
 	var req createRequest
 	if !decode(w, r, &req) {
 		return
@@ -102,8 +107,15 @@ func (s *server) createEntry(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, view(e))
 }
 
-func (s *server) listEntries(w http.ResponseWriter, r *http.Request) {
-	entries, err := s.svc.List(r.Context())
+// listAccounts lists every account, or those of one IP with ?ip=.
+func (s *server) listAccounts(w http.ResponseWriter, r *http.Request) {
+	var entries []*registry.Entry
+	var err error
+	if ip := r.URL.Query().Get("ip"); ip != "" {
+		entries, err = s.svc.DB().ListByIP(r.Context(), ip)
+	} else {
+		entries, err = s.svc.List(r.Context())
+	}
 	if err != nil {
 		writeOpError(w, err)
 		return
@@ -115,9 +127,9 @@ func (s *server) listEntries(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-type entryDetail struct {
+type accountDetail struct {
 	entryView
-	Persona *personaView `json:"persona,omitempty"`
+	Persona *personaView `json:"persona,omitempty"` // the site persona (presented)
 	Events  []eventView  `json:"events,omitempty"`
 }
 
@@ -135,14 +147,21 @@ type eventView struct {
 	Detail string `json:"detail,omitempty"`
 }
 
-func (s *server) getEntry(w http.ResponseWriter, r *http.Request) {
-	e := s.lookup(w, r)
+func personaViewOf(p *registry.Persona) *personaView {
+	return &personaView{
+		HasHostKeys: p.HasHostKeys(), SSHVersion: p.SSHVersion, HASSHServer: p.HASSHServer,
+		AuthMethods: p.AuthMethods, ProbedAt: p.ProbedAt,
+	}
+}
+
+func (s *server) getAccount(w http.ResponseWriter, r *http.Request) {
+	e := s.lookupID(w, r)
 	if e == nil {
 		return
 	}
-	d := entryDetail{entryView: view(e)}
-	if p, err := s.svc.Persona(r.Context(), e.ID); err == nil {
-		d.Persona = &personaView{HasHostKeys: p.HasHostKeys(), SSHVersion: p.SSHVersion, HASSHServer: p.HASSHServer, AuthMethods: p.AuthMethods, ProbedAt: p.ProbedAt}
+	d := accountDetail{entryView: view(e)}
+	if p, err := s.svc.SitePersona(r.Context(), e.ExternalIP); err == nil {
+		d.Persona = personaViewOf(p)
 	}
 	if evs, err := s.svc.Events(r.Context(), e.ID); err == nil {
 		for _, ev := range evs {
@@ -152,44 +171,57 @@ func (s *server) getEntry(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, d)
 }
 
-func (s *server) genPersona(w http.ResponseWriter, r *http.Request) {
-	e := s.lookup(w, r)
-	if e == nil {
+// --- sites (per external IP) ---
+
+type siteView struct {
+	ExternalIP string       `json:"external_ip"`
+	Persona    *personaView `json:"persona,omitempty"`
+	Accounts   []entryView  `json:"accounts"`
+}
+
+func (s *server) getSite(w http.ResponseWriter, r *http.Request) {
+	ip := r.PathValue("ip")
+	accs, err := s.svc.DB().ListByIP(r.Context(), ip)
+	if err != nil {
+		writeOpError(w, err)
 		return
 	}
+	v := siteView{ExternalIP: ip, Accounts: make([]entryView, 0, len(accs))}
+	for _, a := range accs {
+		v.Accounts = append(v.Accounts, view(a))
+	}
+	if p, err := s.svc.SitePersona(r.Context(), ip); err == nil {
+		v.Persona = personaViewOf(p)
+	}
+	writeJSON(w, http.StatusOK, v)
+}
+
+func (s *server) siteGenPersona(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Force bool `json:"force"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&req) // body optional
-	if err := s.svc.GenPersona(r.Context(), e, req.Force); err != nil {
+	if err := s.svc.GenSitePersona(r.Context(), r.PathValue("ip"), req.Force); err != nil {
 		writeOpError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "host keys generated"})
 }
 
-func (s *server) importPersona(w http.ResponseWriter, r *http.Request) {
-	e := s.lookup(w, r)
-	if e == nil {
-		return
-	}
+func (s *server) siteImportPersona(w http.ResponseWriter, r *http.Request) {
 	var hk registry.HostKeys
 	if !decode(w, r, &hk) {
 		return
 	}
-	if err := s.svc.ImportPersonaKeys(r.Context(), e, hk); err != nil {
+	if err := s.svc.ImportSitePersonaKeys(r.Context(), r.PathValue("ip"), hk); err != nil {
 		writeOpError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "host keys imported"})
 }
 
-func (s *server) exportKeys(w http.ResponseWriter, r *http.Request) {
-	e := s.lookup(w, r)
-	if e == nil {
-		return
-	}
-	hk, err := s.svc.ExportKeys(r.Context(), e.ID)
+func (s *server) siteExportKeys(w http.ResponseWriter, r *http.Request) {
+	hk, err := s.svc.ExportSiteKeys(r.Context(), r.PathValue("ip"))
 	if err != nil {
 		writeOpError(w, err)
 		return
@@ -197,8 +229,10 @@ func (s *server) exportKeys(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, hk)
 }
 
+// --- account lifecycle (by id) ---
+
 func (s *server) probe(w http.ResponseWriter, r *http.Request) {
-	e := s.lookup(w, r)
+	e := s.lookupID(w, r)
 	if e == nil {
 		return
 	}
@@ -211,7 +245,7 @@ func (s *server) probe(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) expose(w http.ResponseWriter, r *http.Request) {
-	e := s.lookup(w, r)
+	e := s.lookupID(w, r)
 	if e == nil {
 		return
 	}
@@ -223,7 +257,7 @@ func (s *server) expose(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) retire(w http.ResponseWriter, r *http.Request) {
-	e := s.lookup(w, r)
+	e := s.lookupID(w, r)
 	if e == nil {
 		return
 	}
@@ -243,7 +277,7 @@ func (s *server) retire(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) reactivate(w http.ResponseWriter, r *http.Request) {
-	e := s.lookup(w, r)
+	e := s.lookupID(w, r)
 	if e == nil {
 		return
 	}
@@ -254,9 +288,15 @@ func (s *server) reactivate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, view(e))
 }
 
-// lookup resolves {ip}; writes 404 and returns nil if unknown.
-func (s *server) lookup(w http.ResponseWriter, r *http.Request) *registry.Entry {
-	e, err := s.svc.Get(r.Context(), r.PathValue("ip"))
+// lookupID resolves an account by its {id}; writes the error and returns nil
+// when the id is invalid or unknown.
+func (s *server) lookupID(w http.ResponseWriter, r *http.Request) *registry.Entry {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid account id")
+		return nil
+	}
+	e, err := s.svc.GetByID(r.Context(), id)
 	if err != nil {
 		writeOpError(w, err)
 		return nil

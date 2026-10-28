@@ -42,6 +42,11 @@ func (s *Service) Get(ctx context.Context, ip string) (*registry.Entry, error) {
 	return s.db.ByExternalIP(ctx, ip)
 }
 
+// GetByID returns one account by its id.
+func (s *Service) GetByID(ctx context.Context, id int64) (*registry.Entry, error) {
+	return s.db.ByID(ctx, id)
+}
+
 // Persona returns the persona of an entry (ErrNotFound if none).
 func (s *Service) Persona(ctx context.Context, id int64) (*registry.Persona, error) {
 	return s.db.Persona(ctx, id)
