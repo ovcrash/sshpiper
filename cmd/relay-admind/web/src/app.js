@@ -116,15 +116,16 @@ async function apiRaw(path) {
 // ---------- router ----------
 
 const routes = [
-  { re: /^#\/entries\/?$/, fn: () => renderEntries() },
-  { re: /^#\/entry\/(.+)$/, fn: (m) => renderEntry(decodeURIComponent(m[1])) },
+  { re: /^#\/accounts\/?$/, fn: () => renderAccounts() },
+  { re: /^#\/account\/(\d+)$/, fn: (m) => renderAccount(m[1]) },
+  { re: /^#\/site\/([^?]+)/, fn: (m) => renderSite(decodeURIComponent(m[1])) },
   { re: /^#\/audit\/([^/]+)\/([^/]+)$/, fn: (m) => renderAuditSession(m[1], decodeURIComponent(m[2])) },
   { re: /^#\/audit\/?$/, fn: () => renderAudit() },
 ];
 
 function setActiveNav() {
-  const h = location.hash || '#/entries';
-  const which = h.startsWith('#/audit') ? 'audit' : 'entries';
+  const h = location.hash || '#/accounts';
+  const which = h.startsWith('#/audit') ? 'audit' : 'accounts';
   for (const a of document.querySelectorAll('#nav a')) {
     a.classList.toggle('active', a.dataset.route === which);
   }
@@ -133,7 +134,7 @@ function setActiveNav() {
 async function route() {
   if (!getToken()) { requireLogin(); return; }
   setActiveNav();
-  const h = location.hash || '#/entries';
+  const h = location.hash || '#/accounts';
   for (const r of routes) {
     const m = r.re.exec(h);
     if (m) {
@@ -143,66 +144,73 @@ async function route() {
       return;
     }
   }
-  location.hash = '#/entries';
+  location.hash = '#/accounts';
 }
 
 function errorCard(msg) {
   return `<section class="card"><div class="card-body errors">${escapeHtml(msg)}</div></section>`;
 }
 
-// ---------- entries list ----------
+// ---------- accounts list ----------
 
-async function renderEntries() {
-  const entries = await api('/v1/entries');
-  const counts = { total: entries.length, exposed: 0, retired: 0 };
-  for (const e of entries) {
+function authLabel(e) {
+  return [e.auth_password ? 'password' : '', e.auth_key ? 'key' : ''].filter(Boolean).join('+') || '—';
+}
+
+async function renderAccounts() {
+  const accounts = await api('/v1/accounts');
+  const sites = new Set();
+  const counts = { total: accounts.length, exposed: 0, retired: 0 };
+  for (const e of accounts) {
+    sites.add(e.external_ip);
     if (e.state === 'exposed') counts.exposed++;
     if (e.state === 'retired') counts.retired++;
   }
-  const rows = entries.map((e) => {
-    const auth = [e.auth_password ? 'password' : '', e.auth_key ? 'key' : ''].filter(Boolean).join('+') || '—';
-    return `<tr class="clickable" data-ip="${escapeHtml(e.external_ip)}">
+  const rows = accounts.map((e) => `
+    <tr class="clickable" data-id="${e.id}">
       <td><code>${escapeHtml(e.external_ip)}</code></td>
       <td>${escapeHtml(e.username)}</td>
       <td><code>${escapeHtml(e.backend_host)}:${e.backend_port || 22}</code></td>
-      <td>${escapeHtml(auth)}</td>
+      <td>${escapeHtml(authLabel(e))}</td>
       <td>${statePill(e.state)}</td>
-      <td class="mono">${escapeHtml(fmtTime(e.updated_at))}</td>
-    </tr>`;
-  }).join('');
+      <td><a href="#/site/${encodeURIComponent(e.external_ip)}" data-site>site</a></td>
+    </tr>`).join('');
 
   view.innerHTML = `
     <div class="page-head">
-      <h1><svg class="ic"><use href="#i-server"/></svg> Entries</h1>
-      <button class="btn btn-primary" id="add-entry"><svg class="ic"><use href="#i-plus"/></svg><span>Add entry</span></button>
+      <h1><svg class="ic"><use href="#i-server"/></svg> Accounts</h1>
+      <button class="btn btn-primary" id="add-account"><svg class="ic"><use href="#i-plus"/></svg><span>Add account</span></button>
     </div>
     <section class="stats">
-      <div class="stat"><div class="stat-icon"><svg class="ic"><use href="#i-server"/></svg></div><div class="stat-body"><div class="stat-label">Entries</div><div class="stat-value">${counts.total}</div></div></div>
+      <div class="stat"><div class="stat-icon"><svg class="ic"><use href="#i-server"/></svg></div><div class="stat-body"><div class="stat-label">Sites (IPs)</div><div class="stat-value">${sites.size}</div></div></div>
+      <div class="stat"><div class="stat-icon"><svg class="ic"><use href="#i-key"/></svg></div><div class="stat-body"><div class="stat-label">Accounts</div><div class="stat-value">${counts.total}</div></div></div>
       <div class="stat"><div class="stat-icon"><svg class="ic"><use href="#i-shield"/></svg></div><div class="stat-body"><div class="stat-label">Exposed</div><div class="stat-value">${counts.exposed}</div></div></div>
-      <div class="stat"><div class="stat-icon"><svg class="ic"><use href="#i-x"/></svg></div><div class="stat-body"><div class="stat-label">Retired</div><div class="stat-value">${counts.retired}</div></div></div>
     </section>
     <section class="card">
       <div class="table-wrap">
-        <table><thead><tr><th>external ip</th><th>user</th><th>backend</th><th>auth</th><th>state</th><th>updated</th></tr></thead>
+        <table><thead><tr><th>external ip</th><th>user</th><th>backend</th><th>auth</th><th>state</th><th>site</th></tr></thead>
         <tbody>${rows || ''}</tbody></table>
-        ${entries.length ? '' : '<div class="empty">No entries yet. Add one to get started.</div>'}
+        ${accounts.length ? '' : '<div class="empty">No accounts yet. Add one to get started.</div>'}
       </div>
     </section>`;
 
   for (const tr of view.querySelectorAll('tr.clickable')) {
-    tr.addEventListener('click', () => { location.hash = '#/entry/' + encodeURIComponent(tr.dataset.ip); });
+    tr.addEventListener('click', (ev) => {
+      if (ev.target.closest('a[data-site]')) return; // let the site link work
+      location.hash = '#/account/' + tr.dataset.id;
+    });
   }
-  $('add-entry').addEventListener('click', openAddEntry);
+  $('add-account').addEventListener('click', openAddAccount);
 }
 
-// ---------- add entry dialog ----------
+// ---------- add account dialog ----------
 
-function openAddEntry() {
+function openAddAccount() {
   const dlg = document.createElement('dialog');
   dlg.className = 'form-dialog';
   dlg.innerHTML = `
     <form method="dialog">
-      <h2>Add entry</h2>
+      <h2>Add account</h2>
       <div class="form-grid">
         <div class="field"><label>External IP</label><input type="text" name="external_ip" placeholder="203.0.113.10" required></div>
         <div class="field"><label>Username</label><input type="text" name="username" placeholder="alice" required></div>
@@ -244,11 +252,10 @@ function openAddEntry() {
       return;
     }
     try {
-      await api('/v1/entries', { method: 'POST', body: JSON.stringify(body) });
-      showToast('Entry ' + body.external_ip + ' created', 'success');
+      const acc = await api('/v1/accounts', { method: 'POST', body: JSON.stringify(body) });
+      showToast('Account ' + body.username + '@' + body.external_ip + ' created', 'success');
       dlg.close();
-      location.hash = '#/entry/' + encodeURIComponent(body.external_ip);
-      if ((location.hash) === '#/entry/' + encodeURIComponent(body.external_ip)) route();
+      location.hash = '#/account/' + acc.id;
     } catch (err) {
       errBox.textContent = err.message;
     }
@@ -257,47 +264,45 @@ function openAddEntry() {
   try { dlg.showModal(); } catch (e) { dlg.setAttribute('open', ''); }
 }
 
-// ---------- entry detail ----------
+// ---------- account detail ----------
 
-async function renderEntry(ip) {
-  const e = await api('/v1/entries/' + encodeURIComponent(ip));
+async function renderAccount(id) {
+  const e = await api('/v1/accounts/' + id);
   const p = e.persona || {};
   const events = e.events || [];
-  const exposed = e.state === 'exposed';
   const retired = e.state === 'retired';
+  const ready = e.state === 'ready';
+  const siteReady = !!p.has_host_keys;
 
   view.innerHTML = `
     <div class="page-head">
-      <h1><a href="#/entries" class="crumbs"><svg class="ic"><use href="#i-back"/></svg></a> <code>${escapeHtml(e.external_ip)}</code> ${statePill(e.state)}</h1>
+      <h1><a href="#/accounts" class="crumbs"><svg class="ic"><use href="#i-back"/></svg></a> <code>${escapeHtml(e.username)}@${escapeHtml(e.external_ip)}</code> ${statePill(e.state)}</h1>
       <a class="btn btn-ghost" href="#/audit?ip=${encodeURIComponent(e.external_ip)}"><svg class="ic"><use href="#i-pulse"/></svg><span>Audit sessions</span></a>
     </div>
     <div class="detail-grid">
-      <section class="card"><div class="card-head"><h2><svg class="ic"><use href="#i-server"/></svg> Entry</h2></div>
+      <section class="card"><div class="card-head"><h2><svg class="ic"><use href="#i-key"/></svg> Account</h2></div>
         <div class="card-body"><dl class="kv">
           <dt>external ip</dt><dd><code>${escapeHtml(e.external_ip)}</code></dd>
           <dt>username</dt><dd>${escapeHtml(e.username)}</dd>
           <dt>backend</dt><dd><code>${escapeHtml(e.backend_host)}:${e.backend_port || 22}</code></dd>
-          <dt title="how the proxy logs into the backend">backend auth</dt><dd>${e.auth_password ? 'password ' : ''}${e.auth_key ? 'key' : ''}${(!e.auth_password && !e.auth_key) ? '—' : ''}</dd>
+          <dt title="how the proxy logs into the backend">backend auth</dt><dd>${escapeHtml(authLabel(e))}</dd>
           <dt>state</dt><dd>${statePill(e.state)}</dd>
           <dt>created</dt><dd class="mono">${escapeHtml(fmtTime(e.created_at))}</dd>
           <dt>updated</dt><dd class="mono">${escapeHtml(fmtTime(e.updated_at))}</dd>
           ${e.retired_at ? `<dt>retired</dt><dd class="mono">${escapeHtml(fmtTime(e.retired_at))}</dd>` : ''}
         </dl></div>
       </section>
-      <section class="card"><div class="card-head"><h2><svg class="ic"><use href="#i-key"/></svg> Persona (host keys)</h2></div>
+      <section class="card"><div class="card-head"><h2><svg class="ic"><use href="#i-server"/></svg> Site ${escapeHtml(e.external_ip)}</h2>
+        <a class="btn btn-ghost" href="#/site/${encodeURIComponent(e.external_ip)}">Manage site</a></div>
         <div class="card-body">
-          <p class="card-sub" style="margin-bottom:0.8rem">Host keys the proxy presents to clients. They must match the backend VM's <code>/etc/ssh/ssh_host_*</code>: generate here then install them on the VM, or import the VM's existing keys.</p>
+          <p class="card-sub" style="margin-bottom:0.8rem">The persona (host keys) the proxy presents on this IP, shared by every account on it. Managed on the site page.</p>
           <dl class="kv">
-          <dt>host keys</dt><dd>${p.has_host_keys ? 'present' : '<span class="pill gray">none</span>'}</dd>
+          <dt>host keys</dt><dd>${p.has_host_keys ? 'present' : '<span class="pill gray">none — generate on the site</span>'}</dd>
           <dt>ssh version</dt><dd class="mono">${escapeHtml(p.ssh_version || '—')}</dd>
           <dt>HASSH</dt><dd class="mono">${escapeHtml(p.hassh_server || '—')}</dd>
           <dt>auth methods</dt><dd class="mono">${escapeHtml(p.auth_methods || '—')}</dd>
           <dt>probed</dt><dd class="mono">${escapeHtml(fmtTime(p.probed_at) || '—')}</dd>
           </dl>
-          <div class="actions-row" style="margin-top:0.8rem">
-            <button class="btn" data-act="download-keys" ${p.has_host_keys ? '' : 'disabled title="no host keys yet"'}><svg class="ic"><use href="#i-download"/></svg><span>Download keys</span></button>
-            <button class="btn" data-act="import-keys" ${exposed ? 'disabled title="retire first"' : ''}>Import keys</button>
-          </div>
         </div>
       </section>
     </div>
@@ -305,9 +310,8 @@ async function renderEntry(ip) {
       <div class="card-head"><h2><svg class="ic"><use href="#i-shield"/></svg> Actions</h2></div>
       <div class="card-body actions-row">
         ${retired ? '<button class="btn btn-primary" data-act="reactivate">Reactivate</button>' : ''}
-        <button class="btn" data-act="generate" ${exposed || retired ? 'disabled title="not while exposed/retired"' : ''}>Generate host keys</button>
         <button class="btn" data-act="probe" ${retired ? 'disabled' : ''}>Probe backend</button>
-        <button class="btn btn-primary" data-act="expose" ${exposed || retired ? 'disabled' : ''}>Expose</button>
+        <button class="btn btn-primary" data-act="expose" ${!ready || !siteReady ? `disabled title="${siteReady ? 'probe to ready first' : 'generate the site host keys first'}"` : ''}>Expose</button>
         <button class="btn btn-danger" data-act="retire" ${retired ? 'disabled' : ''}>Retire</button>
       </div>
     </section>
@@ -321,53 +325,113 @@ async function renderEntry(ip) {
     </section>`;
 
   for (const btn of view.querySelectorAll('button[data-act]')) {
-    btn.addEventListener('click', () => entryAction(e, btn.dataset.act));
+    btn.addEventListener('click', () => accountAction(e, btn.dataset.act));
   }
 }
 
-async function entryAction(e, act) {
-  const ip = e.external_ip;
+async function accountAction(e, act) {
+  const id = e.id;
+  const base = '/v1/accounts/' + id;
   try {
-    if (act === 'download-keys') {
-      await downloadHostKeys(ip);
-      return; // nothing changed; no re-render
-    } else if (act === 'import-keys') {
-      openImportKeys(ip);
-      return;
-    } else if (act === 'reactivate') {
-      await api('/v1/entries/' + encodeURIComponent(ip) + '/reactivate', { method: 'POST' });
-      showToast('Entry reactivated — probe and expose it again', 'success');
-    } else if (act === 'generate') {
-      await api('/v1/entries/' + encodeURIComponent(ip) + '/persona/generate', { method: 'POST', body: '{}' });
-      showToast('Host keys generated — install them on the backend VM', 'success');
-      await downloadHostKeys(ip); // surface the keys so they can be installed
+    if (act === 'reactivate') {
+      await api(base + '/reactivate', { method: 'POST' });
+      showToast('Account reactivated — probe and expose it again', 'success');
     } else if (act === 'probe') {
-      const res = await api('/v1/entries/' + encodeURIComponent(ip) + '/probe', { method: 'POST' });
+      const res = await api(base + '/probe', { method: 'POST' });
       const problems = (res && res.Problems) || (res && res.problems) || [];
       showToast(problems.length ? ('Probe: ' + problems.length + ' problem(s)') : 'Probe OK', problems.length ? 'info' : 'success');
     } else if (act === 'expose') {
-      await api('/v1/entries/' + encodeURIComponent(ip) + '/expose', { method: 'POST' });
-      showToast('Entry exposed', 'success');
+      await api(base + '/expose', { method: 'POST' });
+      showToast('Account exposed', 'success');
     } else if (act === 'retire') {
-      if (!confirm('Retire ' + ip + '? The proxy will stop serving it.')) return;
-      await api('/v1/entries/' + encodeURIComponent(ip) + '/retire', { method: 'POST', body: '{}' });
-      showToast('Entry retired', 'success');
+      if (!confirm('Retire ' + e.username + '@' + e.external_ip + '? The proxy will stop serving it.')) return;
+      await api(base + '/retire', { method: 'POST', body: '{}' });
+      showToast('Account retired', 'success');
     }
-    renderEntry(ip);
+    renderAccount(id);
   } catch (err) {
     showToast(err.message, 'error');
   }
 }
 
-// downloadHostKeys fetches the persona private host keys and saves them as the
-// three files to drop into the backend VM's /etc/ssh/.
-async function downloadHostKeys(ip) {
-  const hk = await api('/v1/entries/' + encodeURIComponent(ip) + '/persona/keys');
-  const files = [
-    ['ssh_host_ed25519_key', hk.ed25519],
-    ['ssh_host_ecdsa_key', hk.ecdsa],
-    ['ssh_host_rsa_key', hk.rsa],
-  ];
+// ---------- site detail (per external IP) ----------
+
+async function renderSite(ip) {
+  const s = await api('/v1/sites/' + encodeURIComponent(ip));
+  const p = s.persona || {};
+  const accounts = s.accounts || [];
+  const anyExposed = accounts.some((a) => a.state === 'exposed');
+
+  const rows = accounts.map((e) => `
+    <tr class="clickable" data-id="${e.id}">
+      <td>${escapeHtml(e.username)}</td>
+      <td><code>${escapeHtml(e.backend_host)}:${e.backend_port || 22}</code></td>
+      <td>${escapeHtml(authLabel(e))}</td>
+      <td>${statePill(e.state)}</td>
+    </tr>`).join('');
+
+  view.innerHTML = `
+    <div class="page-head">
+      <h1><a href="#/accounts" class="crumbs"><svg class="ic"><use href="#i-back"/></svg></a> Site <code>${escapeHtml(ip)}</code></h1>
+      <a class="btn btn-ghost" href="#/audit?ip=${encodeURIComponent(ip)}"><svg class="ic"><use href="#i-pulse"/></svg><span>Audit sessions</span></a>
+    </div>
+    <section class="card"><div class="card-head"><h2><svg class="ic"><use href="#i-key"/></svg> Persona (host keys)</h2></div>
+      <div class="card-body">
+        <p class="card-sub" style="margin-bottom:0.8rem">Host keys the proxy presents on this IP, shared by every account. They are a stable generated identity — no need to install them on the backend (the probe captures the backend's own keys for the connection pin).</p>
+        <dl class="kv">
+          <dt>host keys</dt><dd>${p.has_host_keys ? 'present' : '<span class="pill gray">none</span>'}</dd>
+          <dt>ssh version</dt><dd class="mono">${escapeHtml(p.ssh_version || '—')}</dd>
+          <dt>HASSH</dt><dd class="mono">${escapeHtml(p.hassh_server || '—')}</dd>
+          <dt>auth methods</dt><dd class="mono">${escapeHtml(p.auth_methods || '—')}</dd>
+          <dt>probed</dt><dd class="mono">${escapeHtml(fmtTime(p.probed_at) || '—')}</dd>
+        </dl>
+        <div class="actions-row" style="margin-top:0.8rem">
+          <button class="btn btn-primary" data-site-act="generate" ${anyExposed ? 'disabled title="retire the exposed accounts first"' : ''}>${p.has_host_keys ? 'Regenerate host keys' : 'Generate host keys'}</button>
+          <button class="btn" data-site-act="download" ${p.has_host_keys ? '' : 'disabled title="no host keys yet"'}><svg class="ic"><use href="#i-download"/></svg><span>Download keys</span></button>
+          <button class="btn" data-site-act="import" ${anyExposed ? 'disabled title="retire the exposed accounts first"' : ''}>Import keys</button>
+        </div>
+      </div>
+    </section>
+    <section class="card"><div class="card-head"><h2><svg class="ic"><use href="#i-server"/></svg> Accounts on this site</h2>
+      <button class="btn btn-primary" id="add-account-site"><svg class="ic"><use href="#i-plus"/></svg><span>Add account</span></button></div>
+      <div class="table-wrap">
+        <table><thead><tr><th>user</th><th>backend</th><th>auth</th><th>state</th></tr></thead><tbody>${rows}</tbody></table>
+        ${accounts.length ? '' : '<div class="empty">No accounts on this IP.</div>'}
+      </div>
+    </section>`;
+
+  for (const tr of view.querySelectorAll('tr.clickable')) {
+    tr.addEventListener('click', () => { location.hash = '#/account/' + tr.dataset.id; });
+  }
+  for (const btn of view.querySelectorAll('button[data-site-act]')) {
+    btn.addEventListener('click', () => siteAction(ip, btn.dataset.siteAct));
+  }
+  $('add-account-site').addEventListener('click', openAddAccount);
+}
+
+async function siteAction(ip, act) {
+  const base = '/v1/sites/' + encodeURIComponent(ip);
+  try {
+    if (act === 'download') {
+      await downloadSiteKeys(ip);
+      return;
+    } else if (act === 'import') {
+      openImportSiteKeys(ip);
+      return;
+    } else if (act === 'generate') {
+      await api(base + '/persona/generate', { method: 'POST', body: '{"force":true}' });
+      showToast('Site host keys generated', 'success');
+    }
+    renderSite(ip);
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+}
+
+// downloadSiteKeys saves the site's presented private host keys as three files.
+async function downloadSiteKeys(ip) {
+  const hk = await api('/v1/sites/' + encodeURIComponent(ip) + '/persona/keys');
+  const files = [['ssh_host_ed25519_key', hk.ed25519], ['ssh_host_ecdsa_key', hk.ecdsa], ['ssh_host_rsa_key', hk.rsa]];
   let n = 0;
   for (const [name, content] of files) {
     if (!content) continue;
@@ -382,17 +446,17 @@ async function downloadHostKeys(ip) {
   showToast(n ? `Downloaded ${n} host key file(s)` : 'No host keys to download', n ? 'success' : 'info');
 }
 
-// openImportKeys lets the operator paste host keys taken from the VM.
-function openImportKeys(ip) {
+// openImportSiteKeys lets the operator paste the three presented host keys.
+function openImportSiteKeys(ip) {
   const dlg = document.createElement('dialog');
   dlg.className = 'form-dialog';
   dlg.innerHTML = `
     <form method="dialog">
-      <h2>Import host keys</h2>
-      <p class="card-sub" style="margin-bottom:0.8rem">Paste all three of the backend VM's private host keys (from <code>/etc/ssh/ssh_host_*_key</code>): ed25519, ecdsa (P-256) and rsa.</p>
-      <div class="field"><label>ed25519 (ssh_host_ed25519_key)</label><textarea name="ed25519" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"></textarea></div>
-      <div class="field"><label>ecdsa (ssh_host_ecdsa_key)</label><textarea name="ecdsa"></textarea></div>
-      <div class="field"><label>rsa (ssh_host_rsa_key)</label><textarea name="rsa"></textarea></div>
+      <h2>Import site host keys</h2>
+      <p class="card-sub" style="margin-bottom:0.8rem">Paste all three private host keys to present on this IP: ed25519, ecdsa (P-256) and rsa.</p>
+      <div class="field"><label>ed25519</label><textarea name="ed25519" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"></textarea></div>
+      <div class="field"><label>ecdsa (P-256)</label><textarea name="ecdsa"></textarea></div>
+      <div class="field"><label>rsa</label><textarea name="rsa"></textarea></div>
       <div class="errors"></div>
       <div class="dialog-actions">
         <button class="btn btn-ghost" value="cancel" type="submit" formnovalidate>Cancel</button>
@@ -409,10 +473,10 @@ function openImportKeys(ip) {
     const body = { ed25519: fd.get('ed25519') || '', ecdsa: fd.get('ecdsa') || '', rsa: fd.get('rsa') || '' };
     if (!body.ed25519 || !body.ecdsa || !body.rsa) { errBox.textContent = 'All three host keys are required (ed25519, ecdsa, rsa).'; return; }
     try {
-      await api('/v1/entries/' + encodeURIComponent(ip) + '/persona/import', { method: 'POST', body: JSON.stringify(body) });
-      showToast('Host keys imported', 'success');
+      await api('/v1/sites/' + encodeURIComponent(ip) + '/persona/import', { method: 'POST', body: JSON.stringify(body) });
+      showToast('Site host keys imported', 'success');
       dlg.close();
-      renderEntry(ip);
+      renderSite(ip);
     } catch (err) {
       errBox.textContent = err.message;
     }
