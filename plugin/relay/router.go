@@ -73,7 +73,7 @@ func (r *router) newConnection(conn libplugin.ConnMetadata) error {
 	defer cancel()
 
 	site, err := r.db.SiteByExternalIP(ctx, host)
-	if err != nil || !(site.Servable || site.Ready) {
+	if err != nil || !site.Servable && !site.Ready {
 		return errNotServed
 	}
 	return nil
@@ -93,7 +93,7 @@ func (r *router) nextAuthMethods(conn libplugin.ConnMetadata) ([]string, error) 
 	defer cancel()
 
 	site, err := r.db.SiteByExternalIP(ctx, host)
-	if err != nil || !(site.Servable || site.Ready) {
+	if err != nil || !site.Servable && !site.Ready {
 		return nil, errNotServed
 	}
 
