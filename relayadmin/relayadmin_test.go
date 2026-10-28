@@ -89,15 +89,8 @@ func TestLifecycle(t *testing.T) {
 		t.Fatalf("state = %s", e.State)
 	}
 
-	// probe before host keys: refused
-	if _, err := svc.Probe(ctx, e); err == nil {
-		t.Fatal("probe without host keys should fail")
-	}
-
-	// install the backend's real keys as the persona, then probe
-	if err := svc.ImportPersonaKeys(ctx, e, *hk); err != nil {
-		t.Fatal(err)
-	}
+	// probe captures the backend's real host keys and checks the credential,
+	// without needing a persona first
 	res, err := svc.Probe(ctx, e)
 	if err != nil {
 		t.Fatalf("probe: %v", err)
@@ -108,7 +101,17 @@ func TestLifecycle(t *testing.T) {
 	if e.State != registry.StateReady {
 		t.Fatalf("state after probe = %s, want ready", e.State)
 	}
+	if got, _ := svc.Get(ctx, "203.0.113.10"); got.BackendHostED25519 == "" {
+		t.Fatal("backend host keys not captured by probe")
+	}
 
+	// expose needs the site persona's presented host keys
+	if err := svc.Expose(ctx, e); err == nil {
+		t.Fatal("expose without a site persona should fail")
+	}
+	if err := svc.GenSitePersona(ctx, "203.0.113.10", false); err != nil {
+		t.Fatal(err)
+	}
 	if err := svc.Expose(ctx, e); err != nil {
 		t.Fatalf("expose: %v", err)
 	}
@@ -116,9 +119,9 @@ func TestLifecycle(t *testing.T) {
 		t.Fatalf("not exposed: %s", got.State)
 	}
 
-	// generating keys on an exposed entry is refused
-	if err := svc.GenPersona(ctx, e, true); err == nil {
-		t.Fatal("key change on an exposed entry should be refused")
+	// changing the site keys while an account is exposed is refused
+	if err := svc.GenSitePersona(ctx, "203.0.113.10", true); err == nil {
+		t.Fatal("key change while exposed should be refused")
 	}
 
 	if err := svc.Retire(ctx, e); err != nil {
@@ -142,9 +145,6 @@ func TestProbeWrongCredential(t *testing.T) {
 
 	e, err := svc.AddEntry(ctx, registry.NewEntry{ExternalIP: "203.0.113.11", Username: "u", BackendHost: host, BackendPort: bport, Password: "wrong"})
 	if err != nil {
-		t.Fatal(err)
-	}
-	if err := svc.ImportPersonaKeys(ctx, e, *hk); err != nil {
 		t.Fatal(err)
 	}
 	res, err := svc.Probe(ctx, e)

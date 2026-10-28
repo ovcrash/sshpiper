@@ -102,15 +102,96 @@ func (s *Service) ExportKeys(ctx context.Context, id int64) (registry.HostKeys, 
 	return p.HostKeys(), nil
 }
 
-// Expose puts a ready entry into service.
+// Expose puts a ready account into service. It requires the site persona of
+// the account's external IP to have presented host keys.
 func (s *Service) Expose(ctx context.Context, e *registry.Entry) error {
 	if e.State != registry.StateReady {
 		return fmt.Errorf("entry %d is %s: only a ready entry can be exposed", e.ID, e.State)
 	}
-	if p, err := s.db.Persona(ctx, e.ID); err != nil || !p.HasHostKeys() {
-		return fmt.Errorf("entry %d has no host keys", e.ID)
+	if p, err := s.db.SitePersona(ctx, e.ExternalIP); err != nil || !p.HasHostKeys() {
+		return fmt.Errorf("site %s has no host keys (generate or import them first)", e.ExternalIP)
 	}
 	return s.moveTo(ctx, e, registry.StateExposed, "")
+}
+
+// --- site persona (per external IP, presented at KEX) ---
+
+// SitePersona returns the persona presented on an external IP (ErrNotFound if none).
+func (s *Service) SitePersona(ctx context.Context, ip string) (*registry.Persona, error) {
+	return s.db.SitePersona(ctx, ip)
+}
+
+// GenSitePersona generates the three presented host keys for a site. force
+// replaces existing keys. It refuses to change keys while any account on the IP
+// is exposed.
+func (s *Service) GenSitePersona(ctx context.Context, ip string, force bool) error {
+	if err := s.guardSiteKeyChange(ctx, ip); err != nil {
+		return err
+	}
+	p, err := s.loadOrNewSitePersona(ctx, ip)
+	if err != nil {
+		return err
+	}
+	if p.HasHostKeys() && !force {
+		return fmt.Errorf("site %s already has host keys (use force to replace them)", ip)
+	}
+	hk, err := registry.GenerateHostKeys()
+	if err != nil {
+		return err
+	}
+	p.SetHostKeys(*hk)
+	return s.db.SetSitePersona(ctx, ip, *p)
+}
+
+// ImportSitePersonaKeys stores presented host keys given by the caller.
+func (s *Service) ImportSitePersonaKeys(ctx context.Context, ip string, hk registry.HostKeys) error {
+	if err := s.guardSiteKeyChange(ctx, ip); err != nil {
+		return err
+	}
+	if err := hk.Validate(); err != nil {
+		return err
+	}
+	p, err := s.loadOrNewSitePersona(ctx, ip)
+	if err != nil {
+		return err
+	}
+	p.SetHostKeys(hk)
+	return s.db.SetSitePersona(ctx, ip, *p)
+}
+
+// ExportSiteKeys returns the presented private host keys of a site.
+func (s *Service) ExportSiteKeys(ctx context.Context, ip string) (registry.HostKeys, error) {
+	p, err := s.db.SitePersona(ctx, ip)
+	if err != nil {
+		return registry.HostKeys{}, err
+	}
+	if !p.HasHostKeys() {
+		return registry.HostKeys{}, fmt.Errorf("site %s has no host keys", ip)
+	}
+	return p.HostKeys(), nil
+}
+
+func (s *Service) loadOrNewSitePersona(ctx context.Context, ip string) (*registry.Persona, error) {
+	p, err := s.db.SitePersona(ctx, ip)
+	if errors.Is(err, registry.ErrNotFound) {
+		return &registry.Persona{}, nil
+	}
+	return p, err
+}
+
+// guardSiteKeyChange refuses a persona key change while any account on the IP
+// is exposed.
+func (s *Service) guardSiteKeyChange(ctx context.Context, ip string) error {
+	accs, err := s.db.ListByIP(ctx, ip)
+	if err != nil && !errors.Is(err, registry.ErrNotFound) {
+		return err
+	}
+	for _, a := range accs {
+		if a.State == registry.StateExposed {
+			return errors.New("refusing to change host keys while an account on this IP is exposed: retire it first")
+		}
+	}
+	return nil
 }
 
 // Retire stops serving an entry.

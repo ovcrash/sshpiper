@@ -3,7 +3,6 @@ package relayadmin
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net"
 	"strconv"
 	"strings"
@@ -24,25 +23,16 @@ type ProbeResult struct {
 	Problems    []string
 }
 
-// Probe reads what the backend announces, checks the entry's credential and
-// that the backend presents the persona's host keys, records the persona and
-// moves the entry to ready on success. A first probe of a draft entry moves
-// it through probing; a probe of a ready/exposed entry re-checks in place.
+// Probe captures what the backend announces, checks the account's credential
+// works on it, stores the backend's real public host keys on the account (the
+// pin), updates the site persona's identity (version/algorithms/HASSH) and
+// moves the account to ready on success. The site persona's presented host keys
+// are set separately (generated/imported); the backend need not carry them. A
+// first probe of a draft account moves it through probing; a probe of a
+// ready/exposed account re-checks in place.
 func (s *Service) Probe(ctx context.Context, e *registry.Entry) (*ProbeResult, error) {
 	if e.State == registry.StateRetired {
 		return nil, errors.New("retired")
-	}
-
-	p, err := s.db.Persona(ctx, e.ID)
-	if errors.Is(err, registry.ErrNotFound) || (err == nil && !p.HasHostKeys()) {
-		return nil, errors.New("no host keys: generate or import them first")
-	}
-	if err != nil {
-		return nil, err
-	}
-	want, err := sshprobe.FromPersona(p)
-	if err != nil {
-		return nil, err
 	}
 
 	if e.State == registry.StateDraft || e.State == registry.StateNeedsCheck {
@@ -51,42 +41,48 @@ func (s *Service) Probe(ctx context.Context, e *registry.Entry) (*ProbeResult, e
 		}
 	}
 
-	problems := s.loginProblems(ctx, e, want)
+	var problems []string
 	snap, snapErr := sshprobe.Take(ctx, e.BackendHost, e.BackendPort, e.Username)
 	if snapErr != nil {
 		problems = append(problems, "probe: "+snapErr.Error())
 	} else {
-		for _, d := range sshprobe.Diff(&sshprobe.Snapshot{HostKeys: want.HostKeys}, &sshprobe.Snapshot{HostKeys: snap.HostKeys}) {
-			if strings.HasPrefix(d.Field, "host key ") {
-				problems = append(problems, fmt.Sprintf("%s: persona %s, backend %s", d.Field, d.Want, d.Got))
-			}
-		}
+		problems = s.loginProblems(ctx, e, &sshprobe.Snapshot{HostKeys: snap.HostKeys})
 	}
 
 	if len(problems) > 0 {
 		switch e.State {
 		case registry.StateExposed:
 			_ = s.moveTo(ctx, e, registry.StateNeedsCheck, strings.Join(problems, "; "))
-		case registry.StateReady:
+		case registry.StateReady, registry.StateProbing:
 			_ = s.moveTo(ctx, e, registry.StateProbing, strings.Join(problems, "; "))
 		}
 		return &ProbeResult{Problems: problems}, nil
 	}
 
-	p.SSHVersion = snap.Version
-	p.Kex = snap.Kex
-	p.HostKeyAlgs = snap.HostKeyAlgs
-	p.Ciphers = snap.Ciphers
-	p.MACs = snap.MACs
-	p.Compression = snap.Compression
-	p.AuthMethods = strings.Join(snap.AuthMethods, ",")
-	p.HASSHServer = snap.HASSHServer
-	p.ProbedAt = time.Now().UTC().Format(time.RFC3339)
-	snap.HostKeys = want.HostKeys
-	p.ProbeHash = snap.Hash()
+	// store the backend's real public host keys on the account (the pin)
+	ed, ec, rsa := backendAuthKeys(snap.HostKeys)
+	if err := s.db.SetBackendHostKeys(ctx, e.ID, ed, ec, rsa); err != nil {
+		return nil, err
+	}
 
-	changed := p.ProbeHash != want.Hash()
-	if err := s.db.SetPersona(ctx, *p, "probed", fmt.Sprintf("hassh_server=%s changed=%t", p.HASSHServer, changed)); err != nil {
+	// update the site persona's identity (version/algorithms); keep its
+	// presented host keys, which are set generated/imported, not from the backend.
+	sp, err := s.loadOrNewSitePersona(ctx, e.ExternalIP)
+	if err != nil {
+		return nil, err
+	}
+	oldHash := sp.ProbeHash
+	sp.SSHVersion = snap.Version
+	sp.Kex = snap.Kex
+	sp.HostKeyAlgs = snap.HostKeyAlgs
+	sp.Ciphers = snap.Ciphers
+	sp.MACs = snap.MACs
+	sp.Compression = snap.Compression
+	sp.AuthMethods = strings.Join(snap.AuthMethods, ",")
+	sp.HASSHServer = snap.HASSHServer
+	sp.ProbedAt = time.Now().UTC().Format(time.RFC3339)
+	sp.ProbeHash = snap.Hash()
+	if err := s.db.SetSitePersona(ctx, e.ExternalIP, *sp); err != nil {
 		return nil, err
 	}
 	if err := s.moveTo(ctx, e, registry.StateReady, "probe ok"); err != nil {
@@ -94,11 +90,28 @@ func (s *Service) Probe(ctx context.Context, e *registry.Entry) (*ProbeResult, e
 	}
 
 	return &ProbeResult{
-		Version:     p.SSHVersion,
-		HASSHServer: p.HASSHServer,
-		AuthMethods: p.AuthMethods,
-		Changed:     changed,
+		Version:     sp.SSHVersion,
+		HASSHServer: sp.HASSHServer,
+		AuthMethods: sp.AuthMethods,
+		Changed:     oldHash != "" && oldHash != sp.ProbeHash,
 	}, nil
+}
+
+// backendAuthKeys returns the authorized-key lines of a backend's captured
+// public host keys, by type.
+func backendAuthKeys(keys map[string]ssh.PublicKey) (ed, ec, rsa string) {
+	for _, k := range keys {
+		line := strings.TrimSpace(string(ssh.MarshalAuthorizedKey(k)))
+		switch t := k.Type(); {
+		case strings.Contains(t, "ed25519"):
+			ed = line
+		case strings.Contains(t, "ecdsa"):
+			ec = line
+		case strings.Contains(t, "rsa"):
+			rsa = line
+		}
+	}
+	return ed, ec, rsa
 }
 
 // loginProblems checks the entry's credential works on the backend.
