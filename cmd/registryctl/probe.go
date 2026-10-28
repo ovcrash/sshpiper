@@ -83,7 +83,7 @@ func verifyFrontCommand() *cli.Command {
 			if err != nil {
 				return err
 			}
-			p, err := db.Persona(c.Context, e.ID)
+			p, err := db.SitePersona(c.Context, e.ExternalIP)
 			if err != nil {
 				return fmt.Errorf("entry %d has no persona: %w", e.ID, err)
 			}

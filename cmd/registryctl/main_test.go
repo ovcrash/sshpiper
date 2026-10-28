@@ -57,8 +57,9 @@ func TestAddListRetireWithoutRestart(t *testing.T) {
 		t.Fatalf("reader does not see the new entry: %v, %v", e, err)
 	}
 
-	if _, err := run(t, "--registry", db, "add", "--ip", "203.0.113.10", "--user", "x", "--backend", "h", "--password", "p"); err == nil {
-		t.Fatal("duplicate IP accepted")
+	// the same (IP, user) is a duplicate
+	if _, err := run(t, "--registry", db, "add", "--ip", "203.0.113.10", "--user", "alice", "--backend", "h", "--password", "p"); err == nil {
+		t.Fatal("duplicate (IP, user) accepted")
 	}
 
 	list, err := run(t, "--registry", db, "list")
@@ -111,16 +112,16 @@ func TestPersonaExportKeys(t *testing.T) {
 	if _, err := run(t, "--registry", db, "add", "--ip", "203.0.113.10", "--user", "alice", "--backend", "h", "--password", "p"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := run(t, "--registry", db, "persona", "export-keys", "--id", "1", "--dir", keys); err == nil {
+	if _, err := run(t, "--registry", db, "persona", "export-keys", "--ip", "203.0.113.10", "--dir", keys); err == nil {
 		t.Fatal("export before gen succeeded")
 	}
-	if _, err := run(t, "--registry", db, "persona", "gen", "--id", "1"); err != nil {
+	if _, err := run(t, "--registry", db, "persona", "gen", "--ip", "203.0.113.10"); err != nil {
 		t.Fatalf("gen: %v", err)
 	}
-	if _, err := run(t, "--registry", db, "persona", "gen", "--id", "1"); err == nil {
+	if _, err := run(t, "--registry", db, "persona", "gen", "--ip", "203.0.113.10"); err == nil {
 		t.Fatal("gen replaced existing keys without --force")
 	}
-	if _, err := run(t, "--registry", db, "persona", "export-keys", "--id", "1", "--dir", keys); err != nil {
+	if _, err := run(t, "--registry", db, "persona", "export-keys", "--ip", "203.0.113.10", "--dir", keys); err != nil {
 		t.Fatalf("export-keys: %v", err)
 	}
 
@@ -130,7 +131,7 @@ func TestPersonaExportKeys(t *testing.T) {
 			t.Fatalf("private key file: %v, %v", fi, err)
 		}
 	}
-	if _, err := run(t, "--registry", db, "persona", "import", "--id", "1", "--from", keys); err != nil {
+	if _, err := run(t, "--registry", db, "persona", "import", "--ip", "203.0.113.10", "--from", keys); err != nil {
 		t.Fatalf("import: %v", err)
 	}
 }

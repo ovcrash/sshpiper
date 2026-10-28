@@ -59,11 +59,12 @@ func newApp() *cli.App {
 	}
 }
 
-// idFlags select an entry by id or by external IP.
+// idFlags select an account by id, or by external IP and username.
 func idFlags() []cli.Flag {
 	return []cli.Flag{
-		&cli.Int64Flag{Name: "id", Usage: "entry id"},
-		&cli.StringFlag{Name: "ip", Usage: "external IP of the entry"},
+		&cli.Int64Flag{Name: "id", Usage: "account id"},
+		&cli.StringFlag{Name: "ip", Usage: "external IP of the account"},
+		&cli.StringFlag{Name: "user", Usage: "username of the account (with --ip)"},
 	}
 }
 
@@ -71,17 +72,18 @@ func openDB(c *cli.Context, readOnly bool) (*registry.DB, error) {
 	return registry.Open(c.String("registry"), registry.Options{ReadOnly: readOnly})
 }
 
-// findEntry resolves --id or --ip.
+// findEntry resolves --id, or --ip with --user. An IP now carries several
+// accounts, so --ip alone resolves to its live account and warns if ambiguous.
 func findEntry(c *cli.Context, db *registry.DB) (*registry.Entry, error) {
 	switch {
-	case c.IsSet("id") && c.IsSet("ip"):
-		return nil, fmt.Errorf("use either --id or --ip")
 	case c.IsSet("id"):
 		return db.ByID(c.Context, c.Int64("id"))
+	case c.IsSet("ip") && c.IsSet("user"):
+		return db.ByExternalIPAndUser(c.Context, c.String("ip"), c.String("user"))
 	case c.IsSet("ip"):
 		return db.ByExternalIP(c.Context, c.String("ip"))
 	}
-	return nil, fmt.Errorf("--id or --ip is required")
+	return nil, fmt.Errorf("--id, or --ip with --user, is required")
 }
 
 func methods(e *registry.Entry) string {

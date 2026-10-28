@@ -157,7 +157,7 @@ func showCommand() *cli.Command {
 				fmt.Printf("retired:     %s\n", e.RetiredAt)
 			}
 
-			if p, err := db.Persona(c.Context, e.ID); err == nil {
+			if p, err := db.SitePersona(c.Context, e.ExternalIP); err == nil {
 				fmt.Printf("persona:     host keys %t, version %q, hassh_server %q, probed %q\n", p.HasHostKeys(), p.SSHVersion, p.HASSHServer, p.ProbedAt)
 			} else {
 				fmt.Println("persona:     none")
@@ -204,7 +204,7 @@ func exportCommand() *cli.Command {
 			out := make([]exportEntry, 0, len(entries))
 			for _, e := range entries {
 				x := exportEntry{Entry: *e}
-				if p, err := db.Persona(c.Context, e.ID); err == nil {
+				if p, err := db.SitePersona(c.Context, e.ExternalIP); err == nil {
 					x.Persona = p
 				}
 				if !secrets {

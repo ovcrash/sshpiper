@@ -76,49 +76,24 @@ func TestProbeMovesEntryToReady(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// a probe before any host key exists is refused
-	if _, err := run(t, "--registry", dbPath, "probe", "--id", "1"); err == nil {
-		t.Fatal("probe without host keys succeeded")
-	}
-
-	// wrong keys: the backend does not present the persona's keys
-	if _, err := run(t, "--registry", dbPath, "persona", "gen", "--id", "1"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := run(t, "--registry", dbPath, "probe", "--id", "1"); err == nil {
-		t.Fatal("probe succeeded although the backend presents other host keys")
-	}
-	db, err := registry.Open(dbPath, registry.Options{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	e, _ := db.ByID(ctx, 1)
-	if e.State != registry.StateProbing {
-		t.Fatalf("state after a failed probe = %s, want probing", e.State)
-	}
-
-	// the persona now holds the backend's keys
-	p, _ := db.Persona(ctx, 1)
-	p.SetHostKeys(*backendKeys)
-	if err := db.SetPersona(ctx, *p, "persona_generated", "test"); err != nil {
-		t.Fatal(err)
-	}
-	_ = db.Close()
-
+	// probe captures the backend's keys and checks the credential -> ready
 	out, err := run(t, "--registry", dbPath, "probe", "--id", "1")
 	if err != nil {
 		t.Fatalf("probe: %v\n%s", err, out)
 	}
 
-	db, _ = registry.Open(dbPath, registry.Options{ReadOnly: true})
+	db, _ := registry.Open(dbPath, registry.Options{ReadOnly: true})
 	defer db.Close()
-	e, _ = db.ByID(ctx, 1)
-	p, _ = db.Persona(ctx, 1)
+	e, _ := db.ByID(ctx, 1)
 	if e.State != registry.StateReady {
 		t.Fatalf("state = %s, want ready", e.State)
 	}
+	if e.BackendHostED25519 == "" {
+		t.Fatal("backend host keys not captured by probe")
+	}
+	p, _ := db.SitePersona(ctx, "203.0.113.10")
 	if p.SSHVersion != "SSH-2.0-OpenSSH_9.6p1 Ubuntu-3ubuntu13.20" || p.HASSHServer == "" || p.ProbeHash == "" || p.AuthMethods == "" || p.ProbedAt == "" {
-		t.Fatalf("persona not recorded: %+v", p)
+		t.Fatalf("site persona not recorded: %+v", p)
 	}
 }
 
@@ -133,11 +108,6 @@ func TestProbeWrongPassword(t *testing.T) {
 	if _, err := run(t, "--registry", dbPath, "add", "--ip", "203.0.113.10", "--user", "u", "--backend", net.JoinHostPort(host, port), "--password", "not-the-password"); err != nil {
 		t.Fatal(err)
 	}
-	db, _ := registry.Open(dbPath, registry.Options{})
-	p := registry.Persona{EntryID: 1}
-	p.SetHostKeys(*keys)
-	_ = db.SetPersona(context.Background(), p, "persona_generated", "")
-	_ = db.Close()
 
 	if _, err := run(t, "--registry", dbPath, "probe", "--id", "1"); err == nil {
 		t.Fatal("probe accepted a credential the backend refuses")
