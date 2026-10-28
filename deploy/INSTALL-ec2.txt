@@ -18,12 +18,36 @@ Topology
      v
   [ backend VM(s) ]  the real Ubuntu SSH targets, created outside this project
 
-Key idea: on EC2 the proxy does NOT see your public Elastic IPs. A client hits
-the Elastic IP, AWS NATs it to the SECONDARY PRIVATE IP it is associated with,
-and the proxy sees the connection arriving on that private IP. So an "external
-IP" in the registry / RELAY_EXTERNAL_IPS is the secondary PRIVATE IP; the
-Elastic IP is only the public face. (The entry's Expose IP may differ from the
-backend's own address — that is expected behind NAT.)
+=============================================================================
+ IMPORTANT — register the PRIVATE IP, not the Elastic IP (how NAT works here)
+=============================================================================
+The relay routes by the LOCAL address a connection arrives on (the destination
+IP as the OS sees it), never by the client's source or by the public IP.
+
+On EC2 (IPv4) a public Elastic IP is NOT on the instance. AWS does destination
+NAT: a client connects to the Elastic IP, AWS rewrites the destination to the
+SECONDARY PRIVATE IP that EIP is associated with, and the packet reaches the
+instance addressed to that private IP. The original public IP is gone from the
+packet — the relay cannot see it, and does not need to.
+
+Because the association is one Elastic IP <-> one secondary private IP
+(bijective), each public honeypot still maps to a DISTINCT private IP, so the
+relay tells them apart perfectly. Therefore:
+
+  * In the registry / console / RELAY_EXTERNAL_IPS, the "external IP" of an
+    account is the SECONDARY PRIVATE IP (e.g. 10.0.1.11), the one the relay
+    sees. The Elastic IP is only the public face in front of it.
+  * Do NOT try to make the relay "see" the Elastic IP (not feasible after NAT,
+    and unnecessary): the private IP already carries the distinction.
+  * To serve N public honeypots, create N secondary private IPs, each with its
+    own Elastic IP (step 1). One IP can still carry several user accounts.
+
+(Exception: IPv6. EC2 puts the real IPv6 address directly on the interface with
+no NAT, so with IPv6 the relay sees the public address itself — register that.)
+
+The account's Expose/external IP may differ from the backend's own address —
+that is expected: the relay terminates the client's SSH and opens a separate
+one to the backend.
 
 
 1. AWS: networking (console or CLI, done once per entry)
