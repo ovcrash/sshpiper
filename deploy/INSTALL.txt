@@ -12,7 +12,7 @@ Files
   run-proxy.sh        launch the proxy (reads relay.env, adds external IPs)
   relay-proxy.service systemd unit for the proxy
   relay-admind.service systemd unit for the registration API
-  register-entry.sh   register one entry (add -> persona -> probe -> expose)
+  register-entry.sh   register one account (add -> site persona -> probe -> expose)
 
 Quick start
 -----------
@@ -39,16 +39,20 @@ Quick start
      sudo cp deploy/relay-proxy.service /etc/systemd/system/
      sudo systemctl daemon-reload && sudo systemctl enable --now relay-proxy
 
-5. Register an entry (the backend VM must already exist):
+5. Register an account (the backend VM must already exist):
      sudo RELAY_ENV=/etc/relay/relay.env ./deploy/register-entry.sh \
        --ip 203.0.113.10 --user alice --backend 10.0.0.21 --password-file pw.txt
-   It generates host keys, prints where to install them on the VM, then probes
-   and exposes. Removing an entry: "registryctl retire --ip <ip>".
+   It generates the shared site persona (once per IP), then probes the backend —
+   capturing the backend's own host keys, so nothing is installed on the VM — and
+   exposes the account. An IP can carry several accounts: rerun with a different
+   --user (for key auth, that user's public key goes in the backend's
+   authorized_keys; the same key pair is used end to end). Retire an account:
+   "registryctl retire --ip <ip> --user <user>".
 
    The registry can also be filled over HTTPS by the relay-admind service
    (see relay-admind.service); both ways need no proxy restart. relay-admind
    also serves the operator console (browser UI) at https://<RELAY_ADMIN_ADDRESS>/:
-   open it, paste the token, and manage entries and browse the audit (recorded
+   open it, paste the token, and manage accounts and browse the audit (recorded
    sessions, asciicast playback, captured files) when SSHPIPERD_AUDIT_DIR is set.
 
 Notes

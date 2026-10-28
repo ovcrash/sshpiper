@@ -168,27 +168,35 @@ Then open  https://127.0.0.1:8090/  , accept the self-signed cert, and paste the
 token. Or drive the REST API with curl --cacert /etc/relay/admind.crt.
 
 
-9. Register an entry (per backend VM)
--------------------------------------
-The backend Ubuntu VM is created outside this project. For each entry:
+9. Register an account (one per username on a backend VM)
+---------------------------------------------------------
+The backend Ubuntu VM is created outside this project. An external IP can serve
+several accounts (one per username), each routed to a backend by its credential;
+the IP presents one shared, generated "site persona" (host keys). For each account:
 
      sudo RELAY_ENV=/etc/relay/relay.env ./deploy/register-entry.sh \
        --ip 10.0.1.11 --user alice --backend 10.0.2.21 --password-file pw.txt
 
-   --ip        the SECONDARY PRIVATE IP for this entry (matches RELAY_EXTERNAL_IPS)
+   --ip        the SECONDARY PRIVATE IP for this account (matches RELAY_EXTERNAL_IPS)
    --backend   the backend VM's private IP (reachable from the proxy)
-   --user      the username the attacker will use
-   credentials: --password-file, or --private-key/--public-key
+   --user      the username the client authenticates as (the proxy logs into the
+               backend as this user)
+   credentials: --password-file, or --private-key/--public-key. For key auth the
+               same key pair is used end to end: the client presents the key, the
+               proxy relays with the stored private key, and the backend VM must
+               hold the public key in that user's ~/.ssh/authorized_keys.
 
-The script generates the entry's host keys, prints a temp directory, and waits.
-Install those keys on the backend VM and restart its sshd, then press Enter:
-     scp -P 2222 <keydir>/ssh_host_* ubuntu@<backend>:/tmp/      # or any transfer
-     # on the backend, as root:
-     sudo cp /tmp/ssh_host_* /etc/ssh/ && sudo chmod 600 /etc/ssh/ssh_host_*_key
-     sudo systemctl restart ssh
-The script then probes the backend and, if the persona matches, exposes the
-entry. From that point a client hitting the Elastic IP associated with
-10.0.1.11 is proxied to the backend, with its session fully audited.
+The script generates the shared site persona on first use (kept for later accounts
+on the same IP), then PROBES the backend — which captures the backend's own host
+keys for the connection pin, so there is nothing to install on the VM — and
+exposes the account. From then on a client hitting the Elastic IP associated with
+10.0.1.11 authenticates as that user and is proxied to its backend, with the whole
+session audited.
+
+Add another user on the same IP by running register-entry.sh again with a
+different --user (and, for key auth, that user's key in the backend's
+authorized_keys). Register over HTTPS or in the console instead if you prefer
+(step 8); both need no proxy restart.
 
 You can also register entries through the console or the REST API (step 8)
 instead of this script; both need no proxy restart.
